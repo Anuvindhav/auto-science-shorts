@@ -30,17 +30,17 @@ def write_script():
         'Use a calm, humble storytelling voice, but the content must be educational and concrete: open with a one-line hook, '
         'then give specific, real facts with actual numbers and everyday comparisons that directly answer the topic, '
         'and end with one memorable takeaway. Only state well-established facts, never invent numbers, and avoid vague poetry or filler. '
-        'Each scene covers ONE idea and ONE visible subject. For each scene, provide TWO visual fields:\n'
-        '1. "search": a simple 2-word stock video query from common space terms like: '
-        '"planet earth", "sun space", "moon orbit", "solar system", "milky way", "spiral galaxy", "nebula stars", '
-        '"black hole", "asteroid space", "deep space", "saturn rings", "jupiter planet", "mars planet", "cosmos stars".\n'
-        '2. "image_prompt": a vivid, cinematic 10-15 word description of the exact scene to generate a photorealistic vertical space illustration '
-        '(no text, no words, no people, dramatic lighting, 8k astronomy render).\n'
+        'Each scene covers ONE core idea from the narration. For each scene, provide TWO visual fields:\n'
+        '1. "search": a simple 2-word stock video query if it is a physical celestial body (e.g. "planet earth", "sun solar", "saturn rings", "moon orbit"). If it is an abstract concept, write "none".\n'
+        '2. "image_prompt": a vivid, cinematic 15-20 word description that *literally illustrates what the narration in this exact scene is saying* '
+        '(e.g., if narration mentions a bowling ball on a trampoline, describe a heavy glowing sphere warping a cosmic grid; '
+        'if it mentions a hammer and feather falling, describe a silver hammer and white feather dropping on the lunar surface). '
+        'Style: photorealistic 8K astronomy documentary, dramatic lighting, professional vertical 9:16, no text, no humans.\n'
         'Also set topic_is_space to true only if the topic is about astronomy or space, and write a YouTube title (under 70 characters), '
         'a 2-3 sentence description, and hashtags (include #shorts). '
         'Respond ONLY with JSON in this shape: '
         '{"topic_is_space":true,"youtube":{"title":"...","description":"...","hashtags":"#shorts #science"},'
-        '"scenes":[{"narration":"spoken text","search":"2-word query","image_prompt":"cinematic visual description"}]}'
+        '"scenes":[{"narration":"spoken text","search":"2-word query or none","image_prompt":"exact visual illustration"}]}'
     )
     api_host = "generativelanguage.googleapis.com"
     base = HTTPS + api_host + "/v1beta/"
@@ -104,37 +104,38 @@ def cand(uid, kind, resolve):
 
 def ai_image_cands(prompt_text, scene_no):
     clean_prompt = (
-        f"{prompt_text}, photorealistic space astronomy cinematography, epic scale, "
-        "deep cosmos, dramatic lighting, 8k resolution, vertical 9:16, no text, no watermark, no humans"
+        f"{prompt_text}, ultra-realistic 8K space astronomy documentary cinematography, "
+        "epic scale, deep cosmos, volumetric lighting, vertical 9:16 aspect ratio, sharp focus, no text, no watermark"
     )
     encoded = urllib.parse.quote(clean_prompt)
     seed = random.randint(1000, 999999) + scene_no
     poll_host = "image.pollinations.ai"
     url = HTTPS + poll_host + f"/prompt/{encoded}?width=1080&height=1920&seed={seed}&nologo=true"
-    return [cand(f"ai:{seed}", "image", lambda: (url, f"AI Generated Space Art: {prompt_text[:50]}"))]
+    return [cand(f"ai:{seed}", "image", lambda: (url, f"AI Scene Illustration: {prompt_text[:50]}"))]
 
 
 def pixabay_video_cands(query):
     words = query_words(query)
+    if not words:
+        return []
 
     def search(q):
         px_host = "pixabay.com"
-        p = {"key": PIXABAY_KEY, "q": q, "per_page": 30, "safesearch": "true"}
+        p = {"key": PIXABAY_KEY, "q": q, "per_page": 20, "safesearch": "true"}
         r = requests.get(HTTPS + px_host + "/api/videos/", params=p, timeout=60)
         r.raise_for_status()
         return r.json().get("hits", [])
 
-    hits = search(query) or search(" ".join(words[:1]))
-    space_tags = ("space", "planet", "earth", "star", "stars", "galaxy", "nebula", "cosmos", "universe", "moon", "sun", "astronomy", "orbit", "solar")
-    hits.sort(key=lambda h: -(sum(w in h.get("tags", "").lower() for w in words) * 3 + sum(st in h.get("tags", "").lower() for st in space_tags)))
+    try:
+        hits = search(query)
+    except Exception:
+        return []
+
     out = []
     for h in hits:
         tags_lower = h.get("tags", "").lower()
         if any(bad in tags_lower for bad in SKIP_PIXABAY_TAGS):
             continue
-        if META.get("space") and not any(st in tags_lower for st in space_tags + tuple(words)):
-            continue
-
         def resolve(h=h):
             v = h["videos"]
             url = (v.get("large") or {}).get("url") or v["medium"]["url"]
@@ -143,82 +144,64 @@ def pixabay_video_cands(query):
     return out
 
 
-def pixabay_image_cands(query):
-    px_host = "pixabay.com"
-    r = requests.get(HTTPS + px_host + "/api/",
-                     params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "per_page": 20,
-                             "safesearch": "true", "min_width": 1200}, timeout=60)
-    r.raise_for_status()
-    out = []
-    for h in r.json().get("hits", []):
-        tags_lower = h.get("tags", "").lower()
-        if any(bad in tags_lower for bad in SKIP_PIXABAY_TAGS):
-            continue
-        out.append(cand(f"pxi:{h['id']}", "image", lambda h=h: (
-            h["largeImageURL"], f"Pixabay image: {h.get('tags')} ({h.get('pageURL', 'pixabay.com')})")))
-    return out
-
-
 def get_media(scene, base, used, scene_no):
-    query = scene.get("search") or "galaxy stars"
-    img_prompt = scene.get("image_prompt") or f"{query} in deep space"
+    query = (scene.get("search") or "none").lower().strip()
+    img_prompt = scene.get("image_prompt") or scene.get("narration")
 
-    # Alternate between moving HD Pixabay space videos and custom 9:16 AI space art
-    use_ai_first = (scene_no % 2 == 1)
-    if use_ai_first:
+    # 1. If search is a valid physical body, try to get a matching stock video first
+    if query != "none" and len(query) > 2:
         try:
-            c = ai_image_cands(img_prompt, scene_no)[0]
-            url, credit = c["resolve"]()
-            resp = requests.get(url, timeout=90, headers=UA)
-            if resp.ok and len(resp.content) > 15000:
-                path = base + "_src.jpg"
-                with open(path, "wb") as fh:
-                    fh.write(resp.content)
-                used.add(c["uid"])
-                print(f"Scene {scene_no + 1} [ai-image] {img_prompt!r} -> {credit}")
-                return "image", path, credit
-        except Exception as e:
-            print("AI image fallback to video:", e)
-
-    fallbacks = (
-        query,
-        " ".join(query_words(query)[:2]),
-        "planet earth space" if "earth" in query.lower() else ("solar system planets" if "sun" in query.lower() or "planet" in query.lower() else "galaxy stars space"),
-        "nebula cosmos",
-        "universe stars",
-        "deep space"
-    )
-    for fallback_query in fallbacks:
-        try:
-            cands = [c for c in pixabay_video_cands(fallback_query) if c["uid"] not in used][:8]
-        except Exception as e:
-            print("video source failed:", e)
-            continue
-        random.shuffle(cands)
-        for c in cands:
-            try:
-                url, credit = c["resolve"]()
+            cands = [c for c in pixabay_video_cands(query) if c["uid"] not in used][:5]
+            if cands:
+                random.shuffle(cands)
+                url, credit = cands[0]["resolve"]()
                 path = base + "_src.mp4"
                 with open(path, "wb") as fh:
                     fh.write(requests.get(url, timeout=240, headers=UA).content)
-                used.add(c["uid"])
-                print(f"Scene {scene_no + 1} [video] {query!r} ({fallback_query!r}) -> {credit}")
+                used.add(cands[0]["uid"])
+                print(f"Scene {scene_no + 1} [video match] {query!r} -> {credit}")
                 return "video", path, credit
-            except Exception as e:
-                print("candidate failed:", e)
+        except Exception as e:
+            print("Video match fallback:", e)
 
-    # Final fallback to AI image or Pixabay photo
-    for c in ai_image_cands(img_prompt, scene_no) + pixabay_image_cands("galaxy stars"):
-        try:
-            url, credit = c["resolve"]()
+    # 2. For conceptual audio lines, generate an exact custom AI illustration matching the narration
+    try:
+        c = ai_image_cands(img_prompt, scene_no)[0]
+        url, credit = c["resolve"]()
+        resp = requests.get(url, timeout=90, headers=UA)
+        if resp.ok and len(resp.content) > 15000:
             path = base + "_src.jpg"
             with open(path, "wb") as fh:
-                fh.write(requests.get(url, timeout=120, headers=UA).content)
+                fh.write(resp.content)
             used.add(c["uid"])
+            print(f"Scene {scene_no + 1} [concept ai-art] {img_prompt!r} -> {credit}")
             return "image", path, credit
+    except Exception as e:
+        print("AI illustration failed:", e)
+
+    # 3. Ultimate fallback to general space video
+    for fallback in ("deep space", "galaxy stars", "nebula cosmos"):
+        try:
+            cands = [c for c in pixabay_video_cands(fallback) if c["uid"] not in used][:5]
+            if cands:
+                random.shuffle(cands)
+                url, credit = cands[0]["resolve"]()
+                path = base + "_src.mp4"
+                with open(path, "wb") as fh:
+                    fh.write(requests.get(url, timeout=240, headers=UA).content)
+                used.add(cands[0]["uid"])
+                return "video", path, credit
         except Exception:
             continue
-    raise SystemExit(f"Could not find footage for: {query}")
+
+    # Final backup AI image
+    c = ai_image_cands(img_prompt, scene_no)[0]
+    url, credit = c["resolve"]()
+    path = base + "_src.jpg"
+    with open(path, "wb") as fh:
+        fh.write(requests.get(url, timeout=120, headers=UA).content)
+    used.add(c["uid"])
+    return "image", path, credit
 
 
 def duration(path):
