@@ -30,16 +30,16 @@ def write_script():
         'Use a calm, humble storytelling voice, but the content must be educational and concrete: open with a one-line hook, '
         'then give specific, real facts with actual numbers and everyday comparisons that directly answer the topic, '
         'and end with one memorable takeaway. Only state well-established facts, never invent numbers, and avoid vague poetry or filler. '
-        'Each scene covers ONE idea and ONE visible subject. For each scene, "search" must be a literal 2-3 word stock footage '
-        'query for the main astronomical subject in that scene, chosen from concrete visual terms like: '
-        'planet earth, sun solar flare, moon orbit, mars planet, jupiter planet, saturn rings, neptune planet, '
-        'solar system planets, milky way galaxy, asteroid belt, comet space, nebula stars, black hole, galaxy stars, deep space. '
-        'Never use rocket launches, nature scenery, animals, water, people, or landscapes unless the topic is specifically about them. '
+        'Each scene covers ONE idea and ONE visible subject. For each scene, "search" must be a simple 2-word stock video '
+        'query from this exact style of common visual stock terms: '
+        '"planet earth", "sun space", "moon space", "solar system", "milky way", "spiral galaxy", "nebula stars", '
+        '"black hole", "asteroid space", "deep space", "saturn planet", "jupiter planet", "mars planet", "cosmos stars". '
+        'Always use simple 2-word visual terms that stock video sites have thousands of clips for. '
         'Also set topic_is_space to true only if the topic is about astronomy or space, and write a YouTube title (under 70 characters), '
         'a 2-3 sentence description, and hashtags (include #shorts). '
         'Respond ONLY with JSON in this shape: '
         '{"topic_is_space":true,"youtube":{"title":"...","description":"...","hashtags":"#shorts #science"},'
-        '"scenes":[{"narration":"spoken text","search":"2-3 word footage query"}]}'
+        '"scenes":[{"narration":"spoken text","search":"2-word footage query"}]}'
     )
     base = HTTPS + "generativelanguage.googleapis.com/v1beta/"
     hdr = {"x-goog-api-key": GEMINI_KEY}
@@ -85,23 +85,18 @@ def write_script():
     raise SystemExit("No Gemini model could write the script. Wait a few minutes and run again.")
 
 
-SKIP_TITLES = (
+SKIP_NASA = (
     "briefing", "interview", "press", "conference", "news", "panel", "hearing", "launch", "talk",
     "meeting", "anniversary", "retrospective", "what's up", "whats up", "this month", "promo", "trailer",
-    "comparison", "side-by-side", "three-panel", "triptych", "portrait", "cleanroom", "technician", "engineer"
-)
-SKIP_DESC = (
-    "conference room", "control room", "press briefing", "panel discussion", "seated around",
-    "at a table", "staff", "personnel", "ceremony", "lecture", "symposium", "cleanroom",
-    "three-panel", "three panel", "side-by-side", "side by side", "comparison of", "left to right",
-    "chart", "diagram", "graph", "illustration of a", "artist's concept of a spacecraft"
+    "comparison", "side-by-side", "three-panel", "triptych", "portrait", "cleanroom", "technician",
+    "engineer", "scientist", "staff", "personnel", "facility", "laboratory", "building", "test",
+    "assembly", "chamber", "room", "table", "ladder", "suit", "preparing", "working", "chart", "diagram", "map"
 )
 SKIP_PIXABAY_TAGS = (
     "people", "person", "man", "woman", "child", "kids", "girl", "boy", "farmer",
-    "forest", "trees", "woods", "grass", "field", "meadow", "hiking", "office", "business"
+    "forest", "trees", "woods", "grass", "field", "meadow", "hiking", "office", "business", "beach", "ocean"
 )
 UA = {"User-Agent": "auto-science-shorts/1.0 (github actions)"}
-IMAGE_EVERY = 2  # alternate cleanly between Pixabay space videos and NASA high-res space photos
 GOOD_LICENSES = ("public domain", "cc0", "cc by", "cc by-sa", "pd")
 
 
@@ -118,55 +113,27 @@ def cand(uid, kind, resolve):
     return {"uid": uid, "kind": kind, "resolve": resolve}
 
 
-def nasa_cands(query, media="image"):
-    r = requests.get(HTTPS + "images-api.nasa.gov/search",
-                     params={"q": query, "media_type": media}, timeout=60)
-    r.raise_for_status()
-    words, out = query_words(query), []
-    for it in r.json()["collection"]["items"][:25]:
-        d = it["data"][0]
-        title = d.get("title", "")
-        text = (title + " " + d.get("description", "") + " " + " ".join(d.get("keywords", []))).lower()
-        if any(k in title.lower() for k in SKIP_TITLES):
-            continue
-        if any(k in text for k in SKIP_DESC):
-            continue
-        if sum(w in text for w in words) < max(1, len(words) - 1):
-            continue
-
-        def resolve(d=d, title=title):
-            a = requests.get(HTTPS + "images-api.nasa.gov/asset/" + d["nasa_id"], timeout=60)
-            links = [x["href"].replace(HTTP, HTTPS) for x in a.json()["collection"]["items"]]
-            prefs = (("~large.mp4", 80e6), ("~medium.mp4", 80e6), ("~small.mp4", 80e6)) if media == "video" \
-                else (("~orig.jpg", 25e6), ("~large.jpg", 25e6), ("~medium.jpg", 25e6))
-            for tag, cap in prefs:
-                url = next((l for l in links if l.endswith(tag)), None)
-                if url and 0 < file_size(url) <= cap:
-                    return url, f"NASA Image and Video Library: {title} ({d['nasa_id']})"
-            raise RuntimeError("no usable NASA file")
-        out.append(cand("nasa:" + d["nasa_id"], media, resolve))
-    return out
-
-
 def pixabay_video_cands(query):
     words = query_words(query)
 
     def search(q, cat=None):
-        p = {"key": PIXABAY_KEY, "q": q, "per_page": 20, "safesearch": "true"}
+        p = {"key": PIXABAY_KEY, "q": q, "per_page": 30, "safesearch": "true"}
         if cat:
             p["category"] = cat
         r = requests.get(HTTPS + "[pixabay.com/api/videos/](https://pixabay.com/api/videos/)", params=p, timeout=60)
         r.raise_for_status()
         return r.json().get("hits", [])
 
-    hits = search(query, "science") or search(query)
-    hits.sort(key=lambda h: -sum(w in h.get("tags", "").lower() for w in words))
+    hits = search(query) or search(" ".join(words[:1]))
+    # Sort videos that match query words or space terms to the top, but don't reject valid search hits
+    space_tags = ("space", "planet", "earth", "star", "stars", "galaxy", "nebula", "cosmos", "universe", "moon", "sun", "astronomy", "orbit", "solar")
+    hits.sort(key=lambda h: -(sum(w in h.get("tags", "").lower() for w in words) * 3 + sum(st in h.get("tags", "").lower() for st in space_tags)))
     out = []
     for h in hits:
         tags_lower = h.get("tags", "").lower()
-        if sum(w in tags_lower for w in words) == 0:
-            continue
         if any(bad in tags_lower for bad in SKIP_PIXABAY_TAGS):
+            continue
+        if META.get("space") and not any(st in tags_lower for st in space_tags + tuple(words)):
             continue
 
         def resolve(h=h):
@@ -177,16 +144,41 @@ def pixabay_video_cands(query):
     return out
 
 
-def pixabay_image_cands(query):
-    r = requests.get(HTTPS + "[pixabay.com/api/](https://pixabay.com/api/)",
-                     params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "per_page": 15,
-                             "safesearch": "true", "min_width": 1200}, timeout=60)
+def nasa_image_cands(query):
+    # Restrict NASA images to telescope/spacecraft imagery and block all ground/cleanroom/engineer photos
+    r = requests.get(HTTPS + "images-api.nasa.gov/search",
+                     params={"q": query, "media_type": "image"}, timeout=60)
     r.raise_for_status()
     words, out = query_words(query), []
+    for it in r.json()["collection"]["items"][:30]:
+        d = it["data"][0]
+        title = d.get("title", "")
+        text = (title + " " + d.get("description", "") + " " + " ".join(d.get("keywords", []))).lower()
+        if any(k in text for k in SKIP_NASA):
+            continue
+        if sum(w in text for w in words) < max(1, len(words) - 1):
+            continue
+
+        def resolve(d=d, title=title):
+            a = requests.get(HTTPS + "images-api.nasa.gov/asset/" + d["nasa_id"], timeout=60)
+            links = [x["href"].replace(HTTP, HTTPS) for x in a.json()["collection"]["items"]]
+            for tag, cap in (("~orig.jpg", 25e6), ("~large.jpg", 25e6), ("~medium.jpg", 25e6)):
+                url = next((l for l in links if l.endswith(tag)), None)
+                if url and 0 < file_size(url) <= cap:
+                    return url, f"NASA Image and Video Library: {title} ({d['nasa_id']})"
+            raise RuntimeError("no usable NASA file")
+        out.append(cand("nasa:" + d["nasa_id"], "image", resolve))
+    return out
+
+
+def pixabay_image_cands(query):
+    r = requests.get(HTTPS + "[pixabay.com/api/](https://pixabay.com/api/)",
+                     params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "per_page": 20,
+                             "safesearch": "true", "min_width": 1200}, timeout=60)
+    r.raise_for_status()
+    out = []
     for h in r.json().get("hits", []):
         tags_lower = h.get("tags", "").lower()
-        if sum(w in tags_lower for w in words) == 0:
-            continue
         if any(bad in tags_lower for bad in SKIP_PIXABAY_TAGS):
             continue
         out.append(cand(f"pxi:{h['id']}", "image", lambda h=h: (
@@ -194,39 +186,23 @@ def pixabay_image_cands(query):
     return out
 
 
-def wikimedia_cands(query):
-    r = requests.get(HTTPS + "commons.wikimedia.org/w/api.php", headers=UA, timeout=60, params={
-        "action": "query", "format": "json", "generator": "search", "gsrnamespace": 6,
-        "gsrsearch": query + " filetype:bitmap", "gsrlimit": 15, "prop": "imageinfo",
-        "iiprop": "url|size|extmetadata", "iiurlwidth": 2000})
-    r.raise_for_status()
-    out = []
-    for p in (r.json().get("query", {}).get("pages", {}) or {}).values():
-        if any(k in p.get("title", "").lower() for k in SKIP_TITLES):
-            continue
-        info = (p.get("imageinfo") or [{}])[0]
-        lic = info.get("extmetadata", {}).get("LicenseShortName", {}).get("value", "").lower()
-        if info.get("width", 0) < 1400 or not info.get("thumburl"):
-            continue
-        if not any(lic.startswith(g) for g in GOOD_LICENSES):
-            continue
-        who = re.sub(r"<[^>]+>", "", info.get("extmetadata", {}).get("Artist", {}).get("value", "unknown"))
-        out.append(cand("wm:" + p["title"], "image", lambda p=p, info=info, lic=lic, who=who: (
-            info["thumburl"], f"Wikimedia Commons: {p['title']} by {who} ({lic.upper()}) {info.get('descriptionurl', '')}")))
-    return out
-
-
 def get_media(query, base, used, scene_no):
     space = META.get("space")
-    # Use Pixabay for videos (clean stock loops, no NASA TV interviews) and NASA/Wikimedia for real space photos
-    videos = [pixabay_video_cands]
-    images = ([lambda q: nasa_cands(q, "image")] if space else []) + [pixabay_image_cands, wikimedia_cands]
-    order = (images + videos) if scene_no % IMAGE_EVERY == 1 else (videos + images)
-    fallbacks = (query, " ".join(query_words(query)[-2:]), "galaxy stars" if space else "planet earth", "nebula space")
+    # Prioritize moving videos first on every scene; only use images if video search has no hits
+    order = [pixabay_video_cands, nasa_image_cands, pixabay_image_cands] if space else [pixabay_video_cands, pixabay_image_cands]
+    fallbacks = (
+        query,
+        " ".join(query_words(query)[:2]),
+        "planet earth space" if "earth" in query.lower() else ("solar system planets" if "sun" in query.lower() or "planet" in query.lower() else "galaxy stars space"),
+        "nebula cosmos",
+        "universe stars",
+        "deep space"
+    )
     for fallback_query in fallbacks:
-        for source in order:
+        # First try to get a moving video across fallbacks before settling for a still image
+        for source in [pixabay_video_cands]:
             try:
-                cands = [c for c in source(fallback_query) if c["uid"] not in used][:6]
+                cands = [c for c in source(fallback_query) if c["uid"] not in used][:8]
             except Exception as e:
                 print("source failed:", e)
                 continue
@@ -234,15 +210,35 @@ def get_media(query, base, used, scene_no):
             for c in cands:
                 try:
                     url, credit = c["resolve"]()
-                    ext = ".png" if url.lower().split("?")[0].endswith(".png") else (".jpg" if c["kind"] == "image" else ".mp4")
+                    path = base + "_src.mp4"
+                    with open(path, "wb") as fh:
+                        fh.write(requests.get(url, timeout=240, headers=UA).content)
+                    used.add(c["uid"])
+                    print(f"Scene {scene_no + 1} [video] {query!r} ({fallback_query!r}) -> {credit}")
+                    return "video", path, credit
+                except Exception as e:
+                    print("candidate failed:", e)
+
+    # Fallback to images only if no video was found
+    for fallback_query in fallbacks:
+        for source in ([nasa_image_cands, pixabay_image_cands] if space else [pixabay_image_cands]):
+            try:
+                cands = [c for c in source(fallback_query) if c["uid"] not in used][:6]
+            except Exception as e:
+                continue
+            random.shuffle(cands)
+            for c in cands:
+                try:
+                    url, credit = c["resolve"]()
+                    ext = ".png" if url.lower().split("?")[0].endswith(".png") else ".jpg"
                     path = base + "_src" + ext
                     with open(path, "wb") as fh:
                         fh.write(requests.get(url, timeout=240, headers=UA).content)
                     used.add(c["uid"])
-                    print(f"Scene {scene_no + 1} [{c['kind']}] {query!r} -> {credit}")
-                    return c["kind"], path, credit
+                    print(f"Scene {scene_no + 1} [image] {query!r} -> {credit}")
+                    return "image", path, credit
                 except Exception as e:
-                    print("candidate failed:", e)
+                    continue
     raise SystemExit(f"Could not find footage for: {query}")
 
 
@@ -327,7 +323,6 @@ async def main():
                else ["-stream_loop", "-1", "-i", src])
         run(["ffmpeg", "-y"] + inp + ["-i", base + ".mp3",
              "-t", f"{dur}", "-filter_complex", vf, "-map", "[v]", "-map", "1:a",
-            
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
              "-r", "30", "-c:a", "aac", "-ar", "44100", base + ".mp4"])
         parts.append(f"file 's{i}.mp4'")
