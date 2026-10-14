@@ -1,4 +1,4 @@
-import asyncio, json, os, subprocess, sys, time
+import asyncio, json, os, re, subprocess, sys, time
 import requests, edge_tts
 
 TITLE = sys.argv[1] if len(sys.argv) > 1 else "Gravity in 30 seconds"
@@ -13,6 +13,7 @@ VOICE = "en-US-AndrewNeural"  # calm, warm storyteller; change here to switch vo
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
 os.makedirs("work", exist_ok=True)
+META = {}  # filled from Gemini: youtube title/description/hashtags, space flag
 
 
 def run(cmd):
@@ -30,8 +31,11 @@ def write_script():
         'query for the main subject named in that scene, for example: sun, planet earth, mars planet, jupiter planet, saturn rings, '
         'neptune planet, solar system planets, voyager spacecraft, milky way galaxy, asteroid belt, comet, nebula, black hole, '
         'astronaut, telescope night sky. Never use rocket launches, nature scenery, animals, water or landscapes unless the topic is about them. '
+        'Also set topic_is_space to true only if the topic is about astronomy or space, and write a YouTube title (under 70 characters), '
+        'a 2-3 sentence description, and hashtags (include #shorts). '
         'Respond ONLY with JSON in this shape: '
-        '{"scenes":[{"narration":"spoken text","search":"2-3 word footage query"}]}'
+        '{"topic_is_space":true,"youtube":{"title":"...","description":"...","hashtags":"#shorts #science"},'
+        '"scenes":[{"narration":"spoken text","search":"2-3 word footage query"}]}'
     )
     base = "https://generativelanguage.googleapis.com/v1beta/"
     hdr = {"x-goog-api-key": GEMINI_KEY}
@@ -64,6 +68,8 @@ def write_script():
                 text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
                 data = json.loads(text)
                 if isinstance(data, dict):
+                    META.update(data.get("youtube") or {})
+                    META["space"] = bool(data.get("topic_is_space"))
                     data = data.get("scenes") or next(v for v in data.values() if isinstance(v, list))
                 scenes = [x for x in data if isinstance(x, dict) and "narration" in x]
                 if len(scenes) >= 3:
@@ -75,7 +81,47 @@ def write_script():
     raise SystemExit("No Gemini model could write the script. Wait a few minutes and run again.")
 
 
+SKIP_TITLES = ("briefing", "interview", "press", "conference", "news", "panel", "hearing", "launch", "talk")
+
+
+def nasa_clip(query, path):
+    """Try the free NASA Image and Video Library. Returns a credit string, or None."""
+    try:
+        words = [w for w in re.findall(r"[a-z]+", query.lower()) if len(w) > 2]
+        r = requests.get("https://images-api.nasa.gov/search",
+                         params={"q": query, "media_type": "video"}, timeout=60)
+        r.raise_for_status()
+        for it in r.json()["collection"]["items"][:12]:
+            d = it["data"][0]
+            title = d.get("title", "")
+            text = (title + " " + d.get("description", "") + " " + " ".join(d.get("keywords", []))).lower()
+            if any(k in title.lower() for k in SKIP_TITLES):
+                continue
+            if sum(w in text for w in words) < max(1, len(words) - 1):
+                continue
+            a = requests.get("https://images-api.nasa.gov/asset/" + d["nasa_id"], timeout=60)
+            links = [x["href"].replace("http://", "https://") for x in a.json()["collection"]["items"]
+                     if x["href"].endswith(".mp4")]
+            for tag in ("~large.mp4", "~medium.mp4", "~small.mp4"):
+                url = next((l for l in links if l.endswith(tag)), None)
+                if not url:
+                    continue
+                size = int(requests.head(url, allow_redirects=True, timeout=60).headers.get("content-length", 0))
+                if 0 < size <= 80_000_000:
+                    with open(path, "wb") as fh:
+                        fh.write(requests.get(url, timeout=240).content)
+                    return f"NASA Image and Video Library: {title} ({d['nasa_id']})"
+    except Exception as e:
+        print("NASA lookup failed, using Pixabay:", e)
+    return None
+
+
 def get_clip(query, path):
+    if META.get("space"):
+        credit = nasa_clip(query, path)
+        if credit:
+            print("NASA clip for", repr(query), "->", credit)
+            return credit
     words = [w for w in query.lower().split() if len(w) > 2]
 
     def search(q, cat=None):
@@ -87,13 +133,13 @@ def get_clip(query, path):
         return r.json().get("hits", [])
 
     hits = search(query, "science") or search(query) or search("space stars", "science") or search("galaxy")
-    # prefer a clip whose tags actually mention the search words
     best = next((h for h in hits if any(w in h.get("tags", "").lower() for w in words)), hits[0])
-    print("Clip for", repr(query), "->", best.get("tags"))
+    print("Pixabay clip for", repr(query), "->", best.get("tags"))
     v = best["videos"]
     url = (v.get("large") or {}).get("url") or v["medium"]["url"]
     with open(path, "wb") as fh:
         fh.write(requests.get(url, timeout=180).content)
+    return f"Pixabay: {best.get('tags')} ({best.get('pageURL', 'pixabay.com')})"
 
 
 def duration(path):
@@ -156,11 +202,11 @@ STYLE = ("FontName=DejaVu Sans,Bold=1,FontSize=10,PrimaryColour=&H00FFFFFF,"
 
 async def main():
     scenes = write_script()
-    parts = []
+    parts, credits = [], []
     for i, s in enumerate(scenes):
         base = f"work/s{i}"
         words = await speak(s["narration"], base + ".mp3")
-        get_clip(s.get("search") or "galaxy stars", base + "_src.mp4")
+        credits.append(get_clip(s.get("search") or "galaxy stars", base + "_src.mp4"))
         audio_len = duration(base + ".mp3")
         dur = audio_len + 0.4
         write_srt(words or even_words(s["narration"], audio_len), dur, base + ".srt")
@@ -177,7 +223,13 @@ async def main():
         fh.write("\n".join(parts))
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/list.txt",
          "-c", "copy", "short.mp4"])
-    print("Done: short.mp4")
+    with open("metadata.txt", "w", encoding="utf-8") as fh:
+        fh.write(f"TITLE:\n{META.get('title') or TITLE}\n\n")
+        fh.write(f"DESCRIPTION:\n{META.get('description', '')}\n\n")
+        fh.write(f"HASHTAGS:\n{META.get('hashtags') or '#shorts #science'}\n\n")
+        fh.write("FOOTAGE CREDITS:\n" + "\n".join("- " + c for c in credits) + "\n")
+    print("Done: short.mp4 and metadata.txt")
 
 
 asyncio.run(main())
+
