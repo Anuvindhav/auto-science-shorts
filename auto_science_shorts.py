@@ -17,9 +17,11 @@ def write_script():
     prompt = (
         f'Write a YouTube Short script (about 30 seconds, 5 scenes, 12-16 words of '
         f'narration each) for: "{TITLE}". Calm, humble storytelling tone. Hook first, '
-        f'one surprising fact, gentle ending. Respond ONLY with JSON: '
+        f'one surprising fact, gentle ending. For every scene, the search field must be a literal 2-3 word stock footage query showing the science itself, '
+        f'for example planet earth space, galaxy stars, black hole, falling apple, astronaut floating, nebula, telescope night sky. '
+        f'Always include the main topic. NEVER use nature scenery, animals, water, forests or landscapes. Respond ONLY with JSON: '
         f'{{"scenes":[{{"narration":"spoken text","caption":"max 6 words",'
-        f'"search":"1-2 word stock video search"}}]}}'
+        f'"search":"literal 2-3 word footage query"}}]}}'
     )
     base = "https://generativelanguage.googleapis.com/v1beta/"
     hdr = {"x-goog-api-key": GEMINI_KEY}
@@ -48,14 +50,21 @@ def write_script():
 
 
 def get_clip(query, path):
-    def search(q):
-        r = requests.get("https://pixabay.com/api/videos/",
-                         params={"key": PIXABAY_KEY, "q": q, "per_page": 5, "safesearch": "true"},
-                         timeout=60)
+    words = [w for w in query.lower().split() if len(w) > 2]
+
+    def search(q, cat=None):
+        p = {"key": PIXABAY_KEY, "q": q, "per_page": 10, "safesearch": "true"}
+        if cat:
+            p["category"] = cat
+        r = requests.get("https://pixabay.com/api/videos/", params=p, timeout=60)
         r.raise_for_status()
         return r.json().get("hits", [])
-    hits = search(query) or search("space stars")
-    v = hits[0]["videos"]
+
+    hits = search(query, "science") or search(query) or search("space stars", "science") or search("galaxy")
+    # prefer a clip whose tags actually mention the search words
+    best = next((h for h in hits if any(w in h.get("tags", "").lower() for w in words)), hits[0])
+    print("Clip for", repr(query), "->", best.get("tags"))
+    v = best["videos"]
     url = (v.get("large") or {}).get("url") or v["medium"]["url"]
     with open(path, "wb") as fh:
         fh.write(requests.get(url, timeout=180).content)
