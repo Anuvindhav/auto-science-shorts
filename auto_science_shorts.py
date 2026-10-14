@@ -28,11 +28,11 @@ def write_script():
         'then give specific, real facts with actual numbers and everyday comparisons that directly answer the topic, '
         'and end with one memorable takeaway. Only state well-established facts, never invent numbers, and avoid vague poetry or filler. '
         'Each scene covers ONE idea and ONE visible subject. For each scene, "search" must be a literal 2-3 word stock footage '
-        'query describing a purely visual astronomical or physical object (for example: "planet earth", "sun solar flare", '
-        '"neptune planet", "asteroid belt", "spacecraft animation", "solar system", "spiral galaxy", "comet space", "nebula stars"). '
-        'NEVER use mission names alone (like "voyager" or "soho") or abstract terms (like "kuiper belt" or "oort cloud") '
-        'that return archival office meetings or diagrams—instead use visual equivalents like "icy asteroids" or "deep space stars". '
-        'Never use rocket launches, nature scenery, animals, water, or landscapes unless the topic is specifically about them. '
+        'query for the main visual subject in that scene, for example: sun, planet earth, mars planet, jupiter planet, saturn rings, '
+        'neptune planet, solar system planets, spacecraft animation, milky way galaxy, asteroid belt, comet, nebula, black hole, '
+        'astronaut spacewalk, night sky stars. Avoid searching mission names alone (like "voyager" or "soho") or terms that match office meetings; '
+        'instead use visual equivalents like "spacecraft deep space" or "icy asteroids". '
+        'Never use rocket launches, nature scenery, animals, water or landscapes unless the topic is about them. '
         'Also set topic_is_space to true only if the topic is about astronomy or space, and write a YouTube title (under 70 characters), '
         'a 2-3 sentence description, and hashtags (include #shorts). '
         'Respond ONLY with JSON in this shape: '
@@ -60,7 +60,7 @@ def write_script():
             if r.ok:
                 break
             print(model, "failed:", r.status_code, r.text[:120].replace("\n", " "))
-            if r.status_code in (500, 503):
+            if r.status_code in (500, 503):  # busy: wait and retry the same model
                 time.sleep(10 * (attempt + 1))
                 continue
             break
@@ -83,12 +83,13 @@ def write_script():
     raise SystemExit("No Gemini model could write the script. Wait a few minutes and run again.")
 
 
-# Expanded filter list to block NASA conference rooms, personnel photos, and title-card promos
-SKIP_TERMS = (
+SKIP_TITLES = (
     "briefing", "interview", "press", "conference", "news", "panel", "hearing", "launch", "talk",
-    "meeting", "team", "engineer", "scientist", "staff", "personnel", "control room", "room",
-    "table", "office", "portrait", "award", "ceremony", "anniversary", "retrospective",
-    "what's up", "whats up", "this month", "trailer", "promo", "logo", "poster", "chart", "diagram"
+    "meeting", "anniversary", "retrospective", "what's up", "whats up", "this month", "promo", "trailer"
+)
+SKIP_DESC = (
+    "conference room", "control room", "press briefing", "panel discussion", "seated around",
+    "at a table", "staff", "personnel", "ceremony", "lecture", "symposium"
 )
 UA = {"User-Agent": "auto-science-shorts/1.0 (github actions)"}
 IMAGE_EVERY = 3  # every 3rd scene tries a high-resolution photo first, for variety
@@ -108,20 +109,21 @@ def cand(uid, kind, resolve):
     return {"uid": uid, "kind": kind, "resolve": resolve}
 
 
+# ---- each source returns a list of candidates (not downloaded yet) ----
 def nasa_cands(query, media):
     r = requests.get("[https://images-api.nasa.gov/search](https://images-api.nasa.gov/search)",
                      params={"q": query, "media_type": media}, timeout=60)
     r.raise_for_status()
     words, out = query_words(query), []
-    for it in r.json()["collection"]["items"][:30]:
+    for it in r.json()["collection"]["items"][:25]:
         d = it["data"][0]
         title = d.get("title", "")
-        desc = d.get("description", "")
-        kws = " ".join(d.get("keywords", []))
-        full_text = f"{title} {desc} {kws}".lower()
-        if any(k in full_text for k in SKIP_TERMS):
+        text = (title + " " + d.get("description", "") + " " + " ".join(d.get("keywords", []))).lower()
+        if any(k in title.lower() for k in SKIP_TITLES):
             continue
-        if sum(w in full_text for w in words) < max(1, len(words)):
+        if any(k in text for k in SKIP_DESC):
+            continue
+        if sum(w in text for w in words) < max(1, len(words) - 1):
             continue
 
         def resolve(d=d, title=title):
@@ -153,10 +155,7 @@ def pixabay_video_cands(query):
     hits.sort(key=lambda h: -sum(w in h.get("tags", "").lower() for w in words))
     out = []
     for h in hits:
-        tags_lower = h.get("tags", "").lower()
-        if sum(w in tags_lower for w in words) == 0:
-            continue
-        if any(k in tags_lower for k in ("people", "office", "meeting", "business", "forest", "trees")):
+        if sum(w in h.get("tags", "").lower() for w in words) == 0:
             continue
 
         def resolve(h=h):
@@ -189,8 +188,6 @@ def wikimedia_cands(query):
     r.raise_for_status()
     out = []
     for p in (r.json().get("query", {}).get("pages", {}) or {}).values():
-        if any(k in p.get("title", "").lower() for k in SKIP_TERMS):
-            continue
         info = (p.get("imageinfo") or [{}])[0]
         lic = info.get("extmetadata", {}).get("LicenseShortName", {}).get("value", "").lower()
         if info.get("width", 0) < 1400 or not info.get("thumburl"):
@@ -209,14 +206,14 @@ def get_media(query, base, used, scene_no):
     videos = ([lambda q: nasa_cands(q, "video")] if space else []) + [pixabay_video_cands]
     images = ([lambda q: nasa_cands(q, "image")] if space else []) + [wikimedia_cands, pixabay_image_cands]
     order = (images + videos) if scene_no % IMAGE_EVERY == IMAGE_EVERY - 1 else (videos + images)
-    for fallback_query in (query, " ".join(query_words(query)[-2:]), "nebula galaxy stars" if space else query):
+    for fallback_query in (query, " ".join(query_words(query)[-2:]), "space stars" if space else query):
         for source in order:
             try:
                 cands = [c for c in source(fallback_query) if c["uid"] not in used][:6]
             except Exception as e:
                 print("source failed:", e)
                 continue
-            random.shuffle(cands)
+            random.shuffle(cands)  # vary results from run to run
             for c in cands:
                 try:
                     url, credit = c["resolve"]()
@@ -242,7 +239,7 @@ async def speak(text, mp3_path):
     """Save narration audio and return word timings [(start, end, word), ...] in seconds."""
     try:
         comm = edge_tts.Communicate(text, VOICE, rate="-5%", boundary="WordBoundary")
-    except TypeError:
+    except TypeError:  # older edge-tts versions
         comm = edge_tts.Communicate(text, VOICE, rate="-5%")
     audio, words = bytearray(), []
     async for ch in comm.stream():
@@ -294,7 +291,7 @@ def scene_filter(kind, base):
     layout = ("[0:v]split[a][b];"
               "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25[bg];"
               "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
-    if kind == "image":
+    if kind == "image":  # slow zoom so photos feel alive
         layout += (",scale=2160:3840,zoompan=z='min(1.0+0.00045*on,1.18)':"
                    "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30")
     return layout + f",subtitles={base}.srt:force_style='{STYLE}'[v]"
