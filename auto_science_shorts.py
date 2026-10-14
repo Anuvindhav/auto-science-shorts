@@ -3,17 +3,20 @@ import requests, edge_tts
 
 TITLE = sys.argv[1] if len(sys.argv) > 1 else "Gravity in 30 seconds"
 try:
-    SECONDS = int(sys.argv[2]) if len(sys.argv) > 2 else 45  # target video length
+    SECONDS = int(sys.argv[2]) if len(sys.argv) > 2 else 45
 except ValueError:
     SECONDS = 45
 SECONDS = max(20, min(SECONDS, 120))
 N_SCENES = max(4, round(SECONDS / 7.5))
-WORDS_PER_SCENE = round(SECONDS * 2.3 / N_SCENES)  # narration speaks about 2.3 words/second
-VOICE = "en-US-AndrewNeural"  # calm, warm storyteller; change here to switch voice
+WORDS_PER_SCENE = round(SECONDS * 2.3 / N_SCENES)
+VOICE = "en-US-AndrewNeural"
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
 os.makedirs("work", exist_ok=True)
-META = {}  # filled from Gemini: youtube title/description/hashtags, space flag
+META = {}
+
+HTTPS = "https://"
+HTTP = "http://"
 
 
 def run(cmd):
@@ -39,7 +42,7 @@ def write_script():
         '{"topic_is_space":true,"youtube":{"title":"...","description":"...","hashtags":"#shorts #science"},'
         '"scenes":[{"narration":"spoken text","search":"2-3 word footage query"}]}'
     )
-    base = "https://generativelanguage.googleapis.com/v1beta/"
+    base = HTTPS + "generativelanguage.googleapis.com/v1beta/"
     hdr = {"x-goog-api-key": GEMINI_KEY}
     ml = requests.get(base + "models?pageSize=200", headers=hdr, timeout=60)
     ml.raise_for_status()
@@ -60,7 +63,7 @@ def write_script():
             if r.ok:
                 break
             print(model, "failed:", r.status_code, r.text[:120].replace("\n", " "))
-            if r.status_code in (500, 503):  # busy: wait and retry the same model
+            if r.status_code in (500, 503):
                 time.sleep(10 * (attempt + 1))
                 continue
             break
@@ -92,7 +95,7 @@ SKIP_DESC = (
     "at a table", "staff", "personnel", "ceremony", "lecture", "symposium"
 )
 UA = {"User-Agent": "auto-science-shorts/1.0 (github actions)"}
-IMAGE_EVERY = 3  # every 3rd scene tries a high-resolution photo first, for variety
+IMAGE_EVERY = 3
 GOOD_LICENSES = ("public domain", "cc0", "cc by", "cc by-sa", "pd")
 
 
@@ -109,9 +112,8 @@ def cand(uid, kind, resolve):
     return {"uid": uid, "kind": kind, "resolve": resolve}
 
 
-# ---- each source returns a list of candidates (not downloaded yet) ----
 def nasa_cands(query, media):
-    r = requests.get("[https://images-api.nasa.gov/search](https://images-api.nasa.gov/search)",
+    r = requests.get(HTTPS + "images-api.nasa.gov/search",
                      params={"q": query, "media_type": media}, timeout=60)
     r.raise_for_status()
     words, out = query_words(query), []
@@ -127,8 +129,8 @@ def nasa_cands(query, media):
             continue
 
         def resolve(d=d, title=title):
-            a = requests.get("[https://images-api.nasa.gov/asset/](https://images-api.nasa.gov/asset/)" + d["nasa_id"], timeout=60)
-            links = [x["href"].replace("http://", "https://") for x in a.json()["collection"]["items"]]
+            a = requests.get(HTTPS + "images-api.nasa.gov/asset/" + d["nasa_id"], timeout=60)
+            links = [x["href"].replace(HTTP, HTTPS) for x in a.json()["collection"]["items"]]
             prefs = (("~large.mp4", 80e6), ("~medium.mp4", 80e6), ("~small.mp4", 80e6)) if media == "video" \
                 else (("~orig.jpg", 25e6), ("~large.jpg", 25e6), ("~medium.jpg", 25e6))
             for tag, cap in prefs:
@@ -147,7 +149,7 @@ def pixabay_video_cands(query):
         p = {"key": PIXABAY_KEY, "q": q, "per_page": 15, "safesearch": "true"}
         if cat:
             p["category"] = cat
-        r = requests.get("[https://pixabay.com/api/videos/](https://pixabay.com/api/videos/)", params=p, timeout=60)
+        r = requests.get(HTTPS + "[pixabay.com/api/videos/](https://pixabay.com/api/videos/)", params=p, timeout=60)
         r.raise_for_status()
         return r.json().get("hits", [])
 
@@ -167,7 +169,7 @@ def pixabay_video_cands(query):
 
 
 def pixabay_image_cands(query):
-    r = requests.get("[https://pixabay.com/api/](https://pixabay.com/api/)",
+    r = requests.get(HTTPS + "[pixabay.com/api/](https://pixabay.com/api/)",
                      params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "per_page": 15,
                              "safesearch": "true", "min_width": 1200}, timeout=60)
     r.raise_for_status()
@@ -181,7 +183,7 @@ def pixabay_image_cands(query):
 
 
 def wikimedia_cands(query):
-    r = requests.get("[https://commons.wikimedia.org/w/api.php](https://commons.wikimedia.org/w/api.php)", headers=UA, timeout=60, params={
+    r = requests.get(HTTPS + "commons.wikimedia.org/w/api.php", headers=UA, timeout=60, params={
         "action": "query", "format": "json", "generator": "search", "gsrnamespace": 6,
         "gsrsearch": query + " filetype:bitmap", "gsrlimit": 15, "prop": "imageinfo",
         "iiprop": "url|size|extmetadata", "iiurlwidth": 2000})
@@ -201,19 +203,18 @@ def wikimedia_cands(query):
 
 
 def get_media(query, base, used, scene_no):
-    """Find footage for one scene from several free libraries, avoiding repeats. Returns (kind, path, credit)."""
     space = META.get("space")
     videos = ([lambda q: nasa_cands(q, "video")] if space else []) + [pixabay_video_cands]
     images = ([lambda q: nasa_cands(q, "image")] if space else []) + [wikimedia_cands, pixabay_image_cands]
     order = (images + videos) if scene_no % IMAGE_EVERY == IMAGE_EVERY - 1 else (videos + images)
-    for fallback_query in (query, " ".join(query_words(query)[-2:]), "space stars" if space else query):
+    for fallback_query in (query, " ".join(query_words(query)[-2:]), "space stars" if space else "science physics"):
         for source in order:
             try:
                 cands = [c for c in source(fallback_query) if c["uid"] not in used][:6]
             except Exception as e:
                 print("source failed:", e)
                 continue
-            random.shuffle(cands)  # vary results from run to run
+            random.shuffle(cands)
             for c in cands:
                 try:
                     url, credit = c["resolve"]()
@@ -236,10 +237,9 @@ def duration(path):
 
 
 async def speak(text, mp3_path):
-    """Save narration audio and return word timings [(start, end, word), ...] in seconds."""
     try:
         comm = edge_tts.Communicate(text, VOICE, rate="-5%", boundary="WordBoundary")
-    except TypeError:  # older edge-tts versions
+    except TypeError:
         comm = edge_tts.Communicate(text, VOICE, rate="-5%")
     audio, words = bytearray(), []
     async for ch in comm.stream():
@@ -254,7 +254,6 @@ async def speak(text, mp3_path):
 
 
 def even_words(text, total):
-    """Fallback: spread the words evenly across the audio length."""
     ws = text.split()
     step = total / max(len(ws), 1)
     return [(i * step, (i + 1) * step, w) for i, w in enumerate(ws)]
@@ -266,7 +265,6 @@ def srt_time(t):
 
 
 def write_srt(words, total, path):
-    """Group the spoken words into short 3-4 word captions that appear as they are said."""
     chunks, cur = [], []
     for w in words:
         cur.append(w)
@@ -291,7 +289,7 @@ def scene_filter(kind, base):
     layout = ("[0:v]split[a][b];"
               "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25[bg];"
               "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
-    if kind == "image":  # slow zoom so photos feel alive
+    if kind == "image":
         layout += (",scale=2160:3840,zoompan=z='min(1.0+0.00045*on,1.18)':"
                    "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30")
     return layout + f",subtitles={base}.srt:force_style='{STYLE}'[v]"
