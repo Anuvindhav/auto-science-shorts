@@ -5,7 +5,6 @@ TITLE = sys.argv[1] if len(sys.argv) > 1 else "Gravity in 30 seconds"
 VOICE = "en-US-AndrewNeural"  # calm, warm storyteller; change here to switch voice
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 os.makedirs("work", exist_ok=True)
 
 
@@ -92,21 +91,72 @@ def duration(path):
     return float(out.stdout.strip())
 
 
+async def speak(text, mp3_path):
+    """Save narration audio and return word timings [(start, end, word), ...] in seconds."""
+    try:
+        comm = edge_tts.Communicate(text, VOICE, rate="-5%", boundary="WordBoundary")
+    except TypeError:  # older edge-tts versions
+        comm = edge_tts.Communicate(text, VOICE, rate="-5%")
+    audio, words = bytearray(), []
+    async for ch in comm.stream():
+        if ch["type"] == "audio":
+            audio += ch["data"]
+        elif ch["type"] == "WordBoundary":
+            st = ch["offset"] / 1e7
+            words.append((st, st + ch["duration"] / 1e7, ch["text"]))
+    with open(mp3_path, "wb") as fh:
+        fh.write(audio)
+    return words
+
+
+def even_words(text, total):
+    """Fallback: spread the words evenly across the audio length."""
+    ws = text.split()
+    step = total / max(len(ws), 1)
+    return [(i * step, (i + 1) * step, w) for i, w in enumerate(ws)]
+
+
+def srt_time(t):
+    ms = int(round(t * 1000))
+    return f"{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}"
+
+
+def write_srt(words, total, path):
+    """Group the spoken words into short 3-4 word captions that appear as they are said."""
+    chunks, cur = [], []
+    for w in words:
+        cur.append(w)
+        if len(cur) >= 4 or w[2].endswith((",", ".", "!", "?", ";", ":")):
+            chunks.append(cur)
+            cur = []
+    if cur:
+        chunks.append(cur)
+    with open(path, "w", encoding="utf-8") as fh:
+        for i, c in enumerate(chunks, 1):
+            start = c[0][0]
+            end = chunks[i][0][0] if i < len(chunks) else min(total, c[-1][1] + 0.3)
+            fh.write(f"{i}\n{srt_time(start)} --> {srt_time(end)}\n{' '.join(x[2] for x in c)}\n\n")
+
+
+STYLE = ("FontName=DejaVu Sans,Bold=1,FontSize=10,PrimaryColour=&H00FFFFFF,"
+         "OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,"
+         "MarginV=70,MarginL=30,MarginR=30")
+
+
 async def main():
     scenes = write_script()
     parts = []
     for i, s in enumerate(scenes):
         base = f"work/s{i}"
-        await edge_tts.Communicate(s["narration"], VOICE, rate="-5%").save(base + ".mp3")
+        words = await speak(s["narration"], base + ".mp3")
         get_clip(s.get("search") or "galaxy stars", base + "_src.mp4")
-        dur = duration(base + ".mp3") + 0.4
-        with open(base + ".txt", "w") as fh:
-            fh.write(s.get("caption") or "")
+        audio_len = duration(base + ".mp3")
+        dur = audio_len + 0.4
+        write_srt(words or even_words(s["narration"], audio_len), dur, base + ".srt")
         vf = ("[0:v]split[a][b];"
               "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25[bg];"
               "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,"
-              f"drawtext=fontfile={FONT}:textfile={base}.txt:fontcolor=white:fontsize=64:"
-              "borderw=4:bordercolor=black:x=(w-text_w)/2:y=h*0.78[v]")
+              f"subtitles={base}.srt:force_style='{STYLE}'[v]")
         run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", base + "_src.mp4", "-i", base + ".mp3",
              "-t", f"{dur}", "-filter_complex", vf, "-map", "[v]", "-map", "1:a",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
@@ -120,4 +170,3 @@ async def main():
 
 
 asyncio.run(main())
-
