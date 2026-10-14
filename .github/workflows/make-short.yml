@@ -29,7 +29,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
@@ -55,7 +54,3 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: short-${{ github.run_number }}
-          path: |
-            short.mp4
-            metadata.txt
