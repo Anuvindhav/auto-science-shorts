@@ -16,6 +16,8 @@ on:
           - "45"
           - "60"
           - "90"
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,7 +32,14 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      - name: Publish video as a release (direct mp4 download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ github.event.inputs.title }}
+        run: gh release create "short-${{ github.run_number }}" short.mp4 metadata.txt --title "$TITLE" --notes-file metadata.txt
       - uses: actions/upload-artifact@v4
         with:
           name: short
-          path: short.mp4
+          path: |
+            short.mp4
+            metadata.txt
