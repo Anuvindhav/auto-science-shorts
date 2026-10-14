@@ -21,12 +21,27 @@ def write_script():
         f'{{"scenes":[{{"narration":"spoken text","caption":"max 6 words",'
         f'"search":"1-2 word stock video search"}}]}}'
     )
-    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"gemini-2.5-flash:generateContent?key={GEMINI_KEY}")
-    r = requests.post(url, json={
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json"},
-    }, timeout=90)
+    base = "https://generativelanguage.googleapis.com/v1beta/"
+    hdr = {"x-goog-api-key": GEMINI_KEY}
+    ml = requests.get(base + "models?pageSize=200", headers=hdr, timeout=60)
+    ml.raise_for_status()
+    names = [m["name"].split("/")[-1] for m in ml.json().get("models", [])
+             if "generateContent" in m.get("supportedGenerationMethods", [])]
+    bad = ("image", "tts", "live", "audio", "embed", "robotics", "computer", "customtools")
+    flash = sorted((n for n in names if "flash" in n and not any(b in n for b in bad)), reverse=True)
+    order = [n for n in ("gemini-flash-latest", "gemini-2.5-flash") if n in names]
+    candidates = (order + flash)[:5]
+    print("Models to try:", candidates)
+    r = None
+    for model in candidates:
+        r = requests.post(base + f"models/{model}:generateContent", headers=hdr, json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        }, timeout=90)
+        if r.ok:
+            print("Using model:", model)
+            break
+        print(model, "failed:", r.status_code, r.text[:200])
     r.raise_for_status()
     text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
     return json.loads(text)["scenes"]
