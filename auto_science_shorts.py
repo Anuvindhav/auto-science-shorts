@@ -31,11 +31,10 @@ def write_script():
         'then give specific, real facts with actual numbers and everyday comparisons that directly answer the topic, '
         'and end with one memorable takeaway. Only state well-established facts, never invent numbers, and avoid vague poetry or filler. '
         'Each scene covers ONE idea and ONE visible subject. For each scene, "search" must be a literal 2-3 word stock footage '
-        'query for the main visual subject in that scene, for example: sun, planet earth, mars planet, jupiter planet, saturn rings, '
-        'neptune planet, solar system planets, spacecraft animation, milky way galaxy, asteroid belt, comet, nebula, black hole, '
-        'astronaut spacewalk, night sky stars. Avoid searching mission names alone (like "voyager", "lro", or "soho") or terms that match office meetings; '
-        'instead use visual equivalents like "moon surface", "spacecraft deep space", or "icy asteroids". '
-        'Never use rocket launches, nature scenery, animals, water or landscapes unless the topic is about them. '
+        'query for the main astronomical subject in that scene, chosen from concrete visual terms like: '
+        'planet earth, sun solar flare, moon orbit, mars planet, jupiter planet, saturn rings, neptune planet, '
+        'solar system planets, milky way galaxy, asteroid belt, comet space, nebula stars, black hole, galaxy stars, deep space. '
+        'Never use rocket launches, nature scenery, animals, water, people, or landscapes unless the topic is specifically about them. '
         'Also set topic_is_space to true only if the topic is about astronomy or space, and write a YouTube title (under 70 characters), '
         'a 2-3 sentence description, and hashtags (include #shorts). '
         'Respond ONLY with JSON in this shape: '
@@ -89,15 +88,20 @@ def write_script():
 SKIP_TITLES = (
     "briefing", "interview", "press", "conference", "news", "panel", "hearing", "launch", "talk",
     "meeting", "anniversary", "retrospective", "what's up", "whats up", "this month", "promo", "trailer",
-    "comparison", "side-by-side", "three-panel", "triptych"
+    "comparison", "side-by-side", "three-panel", "triptych", "portrait", "cleanroom", "technician", "engineer"
 )
 SKIP_DESC = (
     "conference room", "control room", "press briefing", "panel discussion", "seated around",
-    "at a table", "staff", "personnel", "ceremony", "lecture", "symposium",
-    "three-panel", "three panel", "side-by-side", "side by side", "comparison of", "left to right"
+    "at a table", "staff", "personnel", "ceremony", "lecture", "symposium", "cleanroom",
+    "three-panel", "three panel", "side-by-side", "side by side", "comparison of", "left to right",
+    "chart", "diagram", "graph", "illustration of a", "artist's concept of a spacecraft"
+)
+SKIP_PIXABAY_TAGS = (
+    "people", "person", "man", "woman", "child", "kids", "girl", "boy", "farmer",
+    "forest", "trees", "woods", "grass", "field", "meadow", "hiking", "office", "business"
 )
 UA = {"User-Agent": "auto-science-shorts/1.0 (github actions)"}
-IMAGE_EVERY = 3
+IMAGE_EVERY = 2  # alternate cleanly between Pixabay space videos and NASA high-res space photos
 GOOD_LICENSES = ("public domain", "cc0", "cc by", "cc by-sa", "pd")
 
 
@@ -114,7 +118,7 @@ def cand(uid, kind, resolve):
     return {"uid": uid, "kind": kind, "resolve": resolve}
 
 
-def nasa_cands(query, media):
+def nasa_cands(query, media="image"):
     r = requests.get(HTTPS + "images-api.nasa.gov/search",
                      params={"q": query, "media_type": media}, timeout=60)
     r.raise_for_status()
@@ -148,7 +152,7 @@ def pixabay_video_cands(query):
     words = query_words(query)
 
     def search(q, cat=None):
-        p = {"key": PIXABAY_KEY, "q": q, "per_page": 15, "safesearch": "true"}
+        p = {"key": PIXABAY_KEY, "q": q, "per_page": 20, "safesearch": "true"}
         if cat:
             p["category"] = cat
         r = requests.get(HTTPS + "[pixabay.com/api/videos/](https://pixabay.com/api/videos/)", params=p, timeout=60)
@@ -159,7 +163,10 @@ def pixabay_video_cands(query):
     hits.sort(key=lambda h: -sum(w in h.get("tags", "").lower() for w in words))
     out = []
     for h in hits:
-        if sum(w in h.get("tags", "").lower() for w in words) == 0:
+        tags_lower = h.get("tags", "").lower()
+        if sum(w in tags_lower for w in words) == 0:
+            continue
+        if any(bad in tags_lower for bad in SKIP_PIXABAY_TAGS):
             continue
 
         def resolve(h=h):
@@ -177,7 +184,10 @@ def pixabay_image_cands(query):
     r.raise_for_status()
     words, out = query_words(query), []
     for h in r.json().get("hits", []):
-        if sum(w in h.get("tags", "").lower() for w in words) == 0:
+        tags_lower = h.get("tags", "").lower()
+        if sum(w in tags_lower for w in words) == 0:
+            continue
+        if any(bad in tags_lower for bad in SKIP_PIXABAY_TAGS):
             continue
         out.append(cand(f"pxi:{h['id']}", "image", lambda h=h: (
             h["largeImageURL"], f"Pixabay image: {h.get('tags')} ({h.get('pageURL', 'pixabay.com')})")))
@@ -192,6 +202,8 @@ def wikimedia_cands(query):
     r.raise_for_status()
     out = []
     for p in (r.json().get("query", {}).get("pages", {}) or {}).values():
+        if any(k in p.get("title", "").lower() for k in SKIP_TITLES):
+            continue
         info = (p.get("imageinfo") or [{}])[0]
         lic = info.get("extmetadata", {}).get("LicenseShortName", {}).get("value", "").lower()
         if info.get("width", 0) < 1400 or not info.get("thumburl"):
@@ -206,10 +218,12 @@ def wikimedia_cands(query):
 
 def get_media(query, base, used, scene_no):
     space = META.get("space")
-    videos = ([lambda q: nasa_cands(q, "video")] if space else []) + [pixabay_video_cands]
-    images = ([lambda q: nasa_cands(q, "image")] if space else []) + [wikimedia_cands, pixabay_image_cands]
-    order = (images + videos) if scene_no % IMAGE_EVERY == IMAGE_EVERY - 1 else (videos + images)
-    for fallback_query in (query, " ".join(query_words(query)[-2:]), "space stars" if space else "science physics"):
+    # Use Pixabay for videos (clean stock loops, no NASA TV interviews) and NASA/Wikimedia for real space photos
+    videos = [pixabay_video_cands]
+    images = ([lambda q: nasa_cands(q, "image")] if space else []) + [pixabay_image_cands, wikimedia_cands]
+    order = (images + videos) if scene_no % IMAGE_EVERY == 1 else (videos + images)
+    fallbacks = (query, " ".join(query_words(query)[-2:]), "galaxy stars" if space else "planet earth", "nebula space")
+    for fallback_query in fallbacks:
         for source in order:
             try:
                 cands = [c for c in source(fallback_query) if c["uid"] not in used][:6]
@@ -309,28 +323,8 @@ async def main():
         dur = audio_len + 0.4
         write_srt(words or even_words(s["narration"], audio_len), dur, base + ".srt")
         vf = scene_filter(kind, base)
-        if kind == "image":
-            inp = ["-loop", "1", "-framerate", "30", "-i", src]
-        else:
-            # If the video is long (like a NASA featurette), skip the first 6s to bypass intro title cards
-            vid_len = duration(src)
-            skip = ["-ss", "6"] if vid_len > dur + 8 else []
-            inp = ["-stream_loop", "-1"] + skip + ["-i", src]
+        inp = (["-loop", "1", "-framerate", "30", "-i", src] if kind == "image"
+               else ["-stream_loop", "-1", "-i", src])
         run(["ffmpeg", "-y"] + inp + ["-i", base + ".mp3",
              "-t", f"{dur}", "-filter_complex", vf, "-map", "[v]", "-map", "1:a",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-             "-r", "30", "-c:a", "aac", "-ar", "44100", base + ".mp4"])
-        parts.append(f"file 's{i}.mp4'")
-    with open("work/list.txt", "w") as fh:
-        fh.write("\n".join(parts))
-    run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/list.txt",
-         "-c", "copy", "short.mp4"])
-    with open("metadata.txt", "w", encoding="utf-8") as fh:
-        fh.write(f"TITLE:\n{META.get('title') or TITLE}\n\n")
-        fh.write(f"DESCRIPTION:\n{META.get('description', '')}\n\n")
-        fh.write(f"HASHTAGS:\n{META.get('hashtags') or '#shorts #science'}\n\n")
-        fh.write("FOOTAGE CREDITS:\n" + "\n".join("- " + c for c in credits) + "\n")
-    print("Done: short.mp4 and metadata.txt")
-
-
-asyncio.run(main())
+             "-c:v", "libx264", "-preset", "very
