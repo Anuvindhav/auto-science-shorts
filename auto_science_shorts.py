@@ -327,4 +327,20 @@ async def main():
                else ["-stream_loop", "-1", "-i", src])
         run(["ffmpeg", "-y"] + inp + ["-i", base + ".mp3",
              "-t", f"{dur}", "-filter_complex", vf, "-map", "[v]", "-map", "1:a",
-             "-c:v", "libx264", "-preset", "very
+            
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+             "-r", "30", "-c:a", "aac", "-ar", "44100", base + ".mp4"])
+        parts.append(f"file 's{i}.mp4'")
+    with open("work/list.txt", "w") as fh:
+        fh.write("\n".join(parts))
+    run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/list.txt",
+         "-c", "copy", "short.mp4"])
+    with open("metadata.txt", "w", encoding="utf-8") as fh:
+        fh.write(f"TITLE:\n{META.get('title') or TITLE}\n\n")
+        fh.write(f"DESCRIPTION:\n{META.get('description', '')}\n\n")
+        fh.write(f"HASHTAGS:\n{META.get('hashtags') or '#shorts #science'}\n\n")
+        fh.write("FOOTAGE CREDITS:\n" + "\n".join("- " + c for c in credits) + "\n")
+    print("Done: short.mp4 and metadata.txt")
+
+
+asyncio.run(main())
