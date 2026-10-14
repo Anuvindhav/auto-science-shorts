@@ -2,6 +2,13 @@ import asyncio, json, os, subprocess, sys, time
 import requests, edge_tts
 
 TITLE = sys.argv[1] if len(sys.argv) > 1 else "Gravity in 30 seconds"
+try:
+    SECONDS = int(sys.argv[2]) if len(sys.argv) > 2 else 45  # target video length
+except ValueError:
+    SECONDS = 45
+SECONDS = max(20, min(SECONDS, 120))
+N_SCENES = max(4, round(SECONDS / 7.5))
+WORDS_PER_SCENE = round(SECONDS * 2.3 / N_SCENES)  # narration speaks about 2.3 words/second
 VOICE = "en-US-AndrewNeural"  # calm, warm storyteller; change here to switch voice
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
@@ -14,13 +21,17 @@ def run(cmd):
 
 def write_script():
     prompt = (
-        f'Write a YouTube Short script (about 30 seconds, 5 scenes, 12-16 words of '
-        f'narration each) for: "{TITLE}". Calm, humble storytelling tone. Hook first, '
-        f'one surprising fact, gentle ending. For every scene, the search field must be a literal 2-3 word stock footage query showing the science itself, '
-        f'for example planet earth space, galaxy stars, black hole, falling apple, astronaut floating, nebula, telescope night sky. '
-        f'Always include the main topic. NEVER use nature scenery, animals, water, forests or landscapes. Respond ONLY with JSON: '
-        f'{{"scenes":[{{"narration":"spoken text","caption":"max 6 words",'
-        f'"search":"literal 2-3 word footage query"}}]}}'
+        f'You are writing a narrated YouTube Short that clearly answers this question or topic: "{TITLE}". '
+        f'Length: about {SECONDS} seconds, which is exactly {N_SCENES} scenes of about {WORDS_PER_SCENE} words of narration each. '
+        'Use a calm, humble storytelling voice, but the content must be educational and concrete: open with a one-line hook, '
+        'then give specific, real facts with actual numbers and everyday comparisons that directly answer the topic, '
+        'and end with one memorable takeaway. Only state well-established facts, never invent numbers, and avoid vague poetry or filler. '
+        'Each scene covers ONE idea and ONE visible subject. For each scene, "search" must be a literal 2-3 word stock footage '
+        'query for the main subject named in that scene, for example: sun, planet earth, mars planet, jupiter planet, saturn rings, '
+        'neptune planet, solar system planets, voyager spacecraft, milky way galaxy, asteroid belt, comet, nebula, black hole, '
+        'astronaut, telescope night sky. Never use rocket launches, nature scenery, animals, water or landscapes unless the topic is about them. '
+        'Respond ONLY with JSON in this shape: '
+        '{"scenes":[{"narration":"spoken text","search":"2-3 word footage query"}]}'
     )
     base = "https://generativelanguage.googleapis.com/v1beta/"
     hdr = {"x-goog-api-key": GEMINI_KEY}
