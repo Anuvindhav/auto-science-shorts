@@ -6,6 +6,16 @@ on:
         description: "Video title / topic"
         required: true
         default: "Gravity in 30 seconds"
+      length:
+        description: "Video length in seconds"
+        required: true
+        type: choice
+        default: "45"
+        options:
+          - "30"
+          - "45"
+          - "60"
+          - "90"
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,7 +26,7 @@ jobs:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - run: pip install edge-tts requests
-      - run: python auto_science_shorts.py "${{ github.event.inputs.title }}"
+      - run: python auto_science_shorts.py "${{ github.event.inputs.title }}" "${{ github.event.inputs.length }}"
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
