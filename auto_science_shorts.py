@@ -33,8 +33,8 @@ def write_script():
         'Each scene covers ONE idea and ONE visible subject. For each scene, "search" must be a literal 2-3 word stock footage '
         'query for the main visual subject in that scene, for example: sun, planet earth, mars planet, jupiter planet, saturn rings, '
         'neptune planet, solar system planets, spacecraft animation, milky way galaxy, asteroid belt, comet, nebula, black hole, '
-        'astronaut spacewalk, night sky stars. Avoid searching mission names alone (like "voyager" or "soho") or terms that match office meetings; '
-        'instead use visual equivalents like "spacecraft deep space" or "icy asteroids". '
+        'astronaut spacewalk, night sky stars. Avoid searching mission names alone (like "voyager", "lro", or "soho") or terms that match office meetings; '
+        'instead use visual equivalents like "moon surface", "spacecraft deep space", or "icy asteroids". '
         'Never use rocket launches, nature scenery, animals, water or landscapes unless the topic is about them. '
         'Also set topic_is_space to true only if the topic is about astronomy or space, and write a YouTube title (under 70 characters), '
         'a 2-3 sentence description, and hashtags (include #shorts). '
@@ -88,11 +88,13 @@ def write_script():
 
 SKIP_TITLES = (
     "briefing", "interview", "press", "conference", "news", "panel", "hearing", "launch", "talk",
-    "meeting", "anniversary", "retrospective", "what's up", "whats up", "this month", "promo", "trailer"
+    "meeting", "anniversary", "retrospective", "what's up", "whats up", "this month", "promo", "trailer",
+    "comparison", "side-by-side", "three-panel", "triptych"
 )
 SKIP_DESC = (
     "conference room", "control room", "press briefing", "panel discussion", "seated around",
-    "at a table", "staff", "personnel", "ceremony", "lecture", "symposium"
+    "at a table", "staff", "personnel", "ceremony", "lecture", "symposium",
+    "three-panel", "three panel", "side-by-side", "side by side", "comparison of", "left to right"
 )
 UA = {"User-Agent": "auto-science-shorts/1.0 (github actions)"}
 IMAGE_EVERY = 3
@@ -307,8 +309,13 @@ async def main():
         dur = audio_len + 0.4
         write_srt(words or even_words(s["narration"], audio_len), dur, base + ".srt")
         vf = scene_filter(kind, base)
-        inp = (["-loop", "1", "-framerate", "30", "-i", src] if kind == "image"
-               else ["-stream_loop", "-1", "-i", src])
+        if kind == "image":
+            inp = ["-loop", "1", "-framerate", "30", "-i", src]
+        else:
+            # If the video is long (like a NASA featurette), skip the first 6s to bypass intro title cards
+            vid_len = duration(src)
+            skip = ["-ss", "6"] if vid_len > dur + 8 else []
+            inp = ["-stream_loop", "-1"] + skip + ["-i", src]
         run(["ffmpeg", "-y"] + inp + ["-i", base + ".mp3",
              "-t", f"{dur}", "-filter_complex", vf, "-map", "[v]", "-map", "1:a",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
