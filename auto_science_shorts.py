@@ -1,4 +1,4 @@
-import asyncio, json, os, subprocess, sys
+import asyncio, json, os, subprocess, sys, time
 import requests, edge_tts
 
 TITLE = sys.argv[1] if len(sys.argv) > 1 else "Gravity in 30 seconds"
@@ -36,17 +36,33 @@ def write_script():
     print("Models to try:", candidates)
     r = None
     for model in candidates:
-        r = requests.post(base + f"models/{model}:generateContent", headers=hdr, json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
-        }, timeout=90)
-        if r.ok:
-            print("Using model:", model)
+        for attempt in range(3):
+            r = requests.post(base + f"models/{model}:generateContent", headers=hdr, json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json"},
+            }, timeout=90)
+            if r.ok:
+                break
+            print(model, "failed:", r.status_code, r.text[:120].replace("\n", " "))
+            if r.status_code in (500, 503):  # busy: wait and retry the same model
+                time.sleep(10 * (attempt + 1))
+                continue
             break
-        print(model, "failed:", r.status_code, r.text[:200])
-    r.raise_for_status()
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)["scenes"]
+        if r.ok:
+            try:
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+                data = json.loads(text)
+                if isinstance(data, dict):
+                    data = data.get("scenes") or next(v for v in data.values() if isinstance(v, list))
+                scenes = [x for x in data if isinstance(x, dict) and "narration" in x]
+                if len(scenes) >= 3:
+                    print("Using model:", model)
+                    return scenes
+                print(model, "gave unusable script, trying next model")
+            except Exception as e:
+                print(model, "bad response:", e)
+    raise SystemExit("No Gemini model could write the script. Wait a few minutes and run again.")
 
 
 def get_clip(query, path):
@@ -82,10 +98,10 @@ async def main():
     for i, s in enumerate(scenes):
         base = f"work/s{i}"
         await edge_tts.Communicate(s["narration"], VOICE, rate="-5%").save(base + ".mp3")
-        get_clip(s["search"], base + "_src.mp4")
+        get_clip(s.get("search") or "galaxy stars", base + "_src.mp4")
         dur = duration(base + ".mp3") + 0.4
         with open(base + ".txt", "w") as fh:
-            fh.write(s["caption"])
+            fh.write(s.get("caption") or "")
         vf = ("[0:v]split[a][b];"
               "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25[bg];"
               "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,"
@@ -104,3 +120,4 @@ async def main():
 
 
 asyncio.run(main())
+
