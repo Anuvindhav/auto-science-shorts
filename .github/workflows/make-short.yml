@@ -1,0 +1,25 @@
+name: Make short
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "Video title / topic"
+        required: true
+        default: "Gravity in 30 seconds"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install edge-tts requests
+      - run: python auto_science_shorts.py "${{ github.event.inputs.title }}"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: short
+          path: short.mp4
