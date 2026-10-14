@@ -42,7 +42,8 @@ def write_script():
         '{"topic_is_space":true,"youtube":{"title":"...","description":"...","hashtags":"#shorts #science"},'
         '"scenes":[{"narration":"spoken text","search":"2-word query","image_prompt":"cinematic visual description"}]}'
     )
-    base = HTTPS + "generativelanguage.googleapis.com/v1beta/"
+    api_host = "generativelanguage.googleapis.com"
+    base = HTTPS + api_host + "/v1beta/"
     hdr = {"x-goog-api-key": GEMINI_KEY}
     ml = requests.get(base + "models?pageSize=200", headers=hdr, timeout=60)
     ml.raise_for_status()
@@ -102,14 +103,14 @@ def cand(uid, kind, resolve):
 
 
 def ai_image_cands(prompt_text, scene_no):
-    """Generate a custom 9:16 vertical space image via Pollinations (free, no key)."""
     clean_prompt = (
         f"{prompt_text}, photorealistic space astronomy cinematography, epic scale, "
         "deep cosmos, dramatic lighting, 8k resolution, vertical 9:16, no text, no watermark, no humans"
     )
     encoded = urllib.parse.quote(clean_prompt)
     seed = random.randint(1000, 999999) + scene_no
-    url = HTTPS + f"image.pollinations.ai/prompt/{encoded}?width=1080&height=1920&seed={seed}&nologo=true"
+    poll_host = "image.pollinations.ai"
+    url = HTTPS + poll_host + f"/prompt/{encoded}?width=1080&height=1920&seed={seed}&nologo=true"
     return [cand(f"ai:{seed}", "image", lambda: (url, f"AI Generated Space Art: {prompt_text[:50]}"))]
 
 
@@ -117,8 +118,9 @@ def pixabay_video_cands(query):
     words = query_words(query)
 
     def search(q):
+        px_host = "pixabay.com"
         p = {"key": PIXABAY_KEY, "q": q, "per_page": 30, "safesearch": "true"}
-        r = requests.get(HTTPS + "[pixabay.com/api/videos/](https://pixabay.com/api/videos/)", params=p, timeout=60)
+        r = requests.get(HTTPS + px_host + "/api/videos/", params=p, timeout=60)
         r.raise_for_status()
         return r.json().get("hits", [])
 
@@ -142,7 +144,8 @@ def pixabay_video_cands(query):
 
 
 def pixabay_image_cands(query):
-    r = requests.get(HTTPS + "[pixabay.com/api/](https://pixabay.com/api/)",
+    px_host = "pixabay.com"
+    r = requests.get(HTTPS + px_host + "/api/",
                      params={"key": PIXABAY_KEY, "q": query, "image_type": "photo", "per_page": 20,
                              "safesearch": "true", "min_width": 1200}, timeout=60)
     r.raise_for_status()
@@ -159,9 +162,8 @@ def pixabay_image_cands(query):
 def get_media(scene, base, used, scene_no):
     query = scene.get("search") or "galaxy stars"
     img_prompt = scene.get("image_prompt") or f"{query} in deep space"
-    space = META.get("space")
 
-    # Alternate between moving HD Pixabay space videos and custom 9:16 AI space art for maximum visual hook
+    # Alternate between moving HD Pixabay space videos and custom 9:16 AI space art
     use_ai_first = (scene_no % 2 == 1)
     if use_ai_first:
         try:
@@ -275,7 +277,6 @@ STYLE = ("FontName=DejaVu Sans,Bold=1,FontSize=13,PrimaryColour=&H00FFFFFF,"
 
 
 def scene_filter(kind, base):
-    # Full-screen 9:16 vertical fill (no tiny box in the middle!)
     if kind == "image":
         layout = (
             "[0:v]scale=2160:3840:force_original_aspect_ratio=increase,crop=2160:3840,"
