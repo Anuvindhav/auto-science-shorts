@@ -102,16 +102,33 @@ def cand(uid, kind, resolve):
     return {"uid": uid, "kind": kind, "resolve": resolve}
 
 
-def ai_image_cands(prompt_text, scene_no):
+def is_image(data):
+    return len(data) > 15000 and (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n")
+
+
+def fetch_ai_image(prompt_text, scene_no, path):
+    """Generate an illustration with Pollinations (free, no key). Retries because the service can be busy.
+    Returns a credit string, or None if every try failed."""
     clean_prompt = (
         f"{prompt_text}, ultra-realistic 8K space astronomy documentary cinematography, "
         "epic scale, deep cosmos, volumetric lighting, vertical 9:16 aspect ratio, sharp focus, no text, no watermark"
     )
     encoded = urllib.parse.quote(clean_prompt)
-    seed = random.randint(1000, 999999) + scene_no
     poll_host = "image.pollinations.ai"
-    url = HTTPS + poll_host + f"/prompt/{encoded}?width=1080&height=1920&seed={seed}&nologo=true"
-    return [cand(f"ai:{seed}", "image", lambda: (url, f"AI Scene Illustration: {prompt_text[:50]}"))]
+    for attempt in range(3):
+        seed = random.randint(1000, 999999) + scene_no
+        url = HTTPS + poll_host + f"/prompt/{encoded}?width=1080&height=1920&seed={seed}&nologo=true"
+        try:
+            resp = requests.get(url, timeout=120, headers=UA)
+            if resp.ok and is_image(resp.content):
+                with open(path, "wb") as fh:
+                    fh.write(resp.content)
+                return f"AI scene illustration (Pollinations): {prompt_text[:60]}"
+            print("AI image try", attempt + 1, "not usable:", resp.status_code)
+        except Exception as e:
+            print("AI image try", attempt + 1, "failed:", e)
+        time.sleep(5 * (attempt + 1))
+    return None
 
 
 def pixabay_video_cands(query):
@@ -136,6 +153,7 @@ def pixabay_video_cands(query):
         tags_lower = h.get("tags", "").lower()
         if any(bad in tags_lower for bad in SKIP_PIXABAY_TAGS):
             continue
+
         def resolve(h=h):
             v = h["videos"]
             url = (v.get("large") or {}).get("url") or v["medium"]["url"]
@@ -144,64 +162,46 @@ def pixabay_video_cands(query):
     return out
 
 
+def download_video(cands, used, path):
+    random.shuffle(cands)
+    for c in cands[:5]:
+        try:
+            url, credit = c["resolve"]()
+            with open(path, "wb") as fh:
+                fh.write(requests.get(url, timeout=240, headers=UA).content)
+            used.add(c["uid"])
+            return credit
+        except Exception as e:
+            print("video download failed:", e)
+    return None
+
+
 def get_media(scene, base, used, scene_no):
     query = (scene.get("search") or "none").lower().strip()
     img_prompt = scene.get("image_prompt") or scene.get("narration")
 
     # 1. If search is a valid physical body, try to get a matching stock video first
     if query != "none" and len(query) > 2:
-        try:
-            cands = [c for c in pixabay_video_cands(query) if c["uid"] not in used][:5]
-            if cands:
-                random.shuffle(cands)
-                url, credit = cands[0]["resolve"]()
-                path = base + "_src.mp4"
-                with open(path, "wb") as fh:
-                    fh.write(requests.get(url, timeout=240, headers=UA).content)
-                used.add(cands[0]["uid"])
-                print(f"Scene {scene_no + 1} [video match] {query!r} -> {credit}")
-                return "video", path, credit
-        except Exception as e:
-            print("Video match fallback:", e)
+        credit = download_video([c for c in pixabay_video_cands(query) if c["uid"] not in used],
+                                used, base + "_src.mp4")
+        if credit:
+            print(f"Scene {scene_no + 1} [video match] {query!r} -> {credit}")
+            return "video", base + "_src.mp4", credit
 
-    # 2. For conceptual audio lines, generate an exact custom AI illustration matching the narration
-    try:
-        c = ai_image_cands(img_prompt, scene_no)[0]
-        url, credit = c["resolve"]()
-        resp = requests.get(url, timeout=90, headers=UA)
-        if resp.ok and len(resp.content) > 15000:
-            path = base + "_src.jpg"
-            with open(path, "wb") as fh:
-                fh.write(resp.content)
-            used.add(c["uid"])
-            print(f"Scene {scene_no + 1} [concept ai-art] {img_prompt!r} -> {credit}")
-            return "image", path, credit
-    except Exception as e:
-        print("AI illustration failed:", e)
+    # 2. For conceptual lines, generate a custom AI illustration matching the narration
+    credit = fetch_ai_image(img_prompt, scene_no, base + "_src.jpg")
+    if credit:
+        print(f"Scene {scene_no + 1} [concept ai-art] {img_prompt!r}")
+        return "image", base + "_src.jpg", credit
 
-    # 3. Ultimate fallback to general space video
+    # 3. Fallback to general space video
     for fallback in ("deep space", "galaxy stars", "nebula cosmos"):
-        try:
-            cands = [c for c in pixabay_video_cands(fallback) if c["uid"] not in used][:5]
-            if cands:
-                random.shuffle(cands)
-                url, credit = cands[0]["resolve"]()
-                path = base + "_src.mp4"
-                with open(path, "wb") as fh:
-                    fh.write(requests.get(url, timeout=240, headers=UA).content)
-                used.add(cands[0]["uid"])
-                return "video", path, credit
-        except Exception:
-            continue
+        credit = download_video([c for c in pixabay_video_cands(fallback) if c["uid"] not in used],
+                                used, base + "_src.mp4")
+        if credit:
+            return "video", base + "_src.mp4", credit
 
-    # Final backup AI image
-    c = ai_image_cands(img_prompt, scene_no)[0]
-    url, credit = c["resolve"]()
-    path = base + "_src.jpg"
-    with open(path, "wb") as fh:
-        fh.write(requests.get(url, timeout=120, headers=UA).content)
-    used.add(c["uid"])
-    return "image", path, credit
+    raise SystemExit(f"Could not find footage for scene {scene_no + 1}")
 
 
 def duration(path):
@@ -292,8 +292,12 @@ async def main():
         parts.append(f"file 's{i}.mp4'")
     with open("work/list.txt", "w") as fh:
         fh.write("\n".join(parts))
+    # re-encode while joining so timestamps are clean and YouTube / iPhone can always read the file
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/list.txt",
-         "-c", "copy", "short.mp4"])
+         "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-profile:v", "high", "-level", "4.1",
+         "-pix_fmt", "yuv420p", "-r", "30", "-video_track_timescale", "30000",
+         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+         "-movflags", "+faststart", "-map_metadata", "-1", "short.mp4"])
     with open("metadata.txt", "w", encoding="utf-8") as fh:
         fh.write(f"TITLE:\n{META.get('title') or TITLE}\n\n")
         fh.write(f"DESCRIPTION:\n{META.get('description', '')}\n\n")
