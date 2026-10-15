@@ -1,4 +1,4 @@
-import asyncio, json, os, random, re, subprocess, sys, time, urllib.parse
+import asyncio, base64, json, os, random, re, subprocess, sys, time, urllib.parse
 import requests, edge_tts
 
 TITLE = sys.argv[1] if len(sys.argv) > 1 else "Gravity in 30 seconds"
@@ -14,6 +14,8 @@ GEMINI_KEY = os.environ["GEMINI_API_KEY"]
 PIXABAY_KEY = os.environ["PIXABAY_API_KEY"]
 os.makedirs("work", exist_ok=True)
 META = {}
+SHOTS_PER_SCENE = 2  # the picture changes this many times inside each scene
+GEMINI_IMG = {"ok": True, "models": None}
 
 HTTPS = "https://"
 HTTP = "http://"
@@ -30,17 +32,20 @@ def write_script():
         'Use a calm, humble storytelling voice, but the content must be educational and concrete: open with a one-line hook, '
         'then give specific, real facts with actual numbers and everyday comparisons that directly answer the topic, '
         'and end with one memorable takeaway. Only state well-established facts, never invent numbers, and avoid vague poetry or filler. '
-        'Each scene covers ONE core idea from the narration. For each scene, provide TWO visual fields:\n'
-        '1. "search": a simple 2-word stock video query if it is a physical celestial body (e.g. "planet earth", "sun solar", "saturn rings", "moon orbit"). If it is an abstract concept, write "none".\n'
-        '2. "image_prompt": a vivid, cinematic 15-20 word description that *literally illustrates what the narration in this exact scene is saying* '
-        '(e.g., if narration mentions a bowling ball on a trampoline, describe a heavy glowing sphere warping a cosmic grid; '
-        'if it mentions a hammer and feather falling, describe a silver hammer and white feather dropping on the lunar surface). '
-        'Style: photorealistic 8K astronomy documentary, dramatic lighting, professional vertical 9:16, no text, no humans.\n'
+        'Each scene covers ONE core idea. For each scene give THREE visual fields, so the picture changes every few seconds '
+        'and shows exactly what is being said:\n'
+        '1. "search": a simple 2-word stock video query ONLY if the scene is about a real celestial body (for example "planet earth", '
+        '"saturn rings", "moon orbit", "sun solar"); otherwise "none".\n'
+        '2. "image_prompt": one concrete, simple, photographable subject for the first picture, 12-18 words, for example '
+        '"The Moon orbiting Earth seen from space, Earth large in the foreground, NASA photograph style". '
+        'Describe real objects and real scenes, never abstract swirls, glows or metaphors.\n'
+        '3. "image_prompt_2": a different second picture for the same scene (different subject or camera angle), same rules.\n'
+        'All pictures: photorealistic space documentary look, no text, no people.\n'
         'Also set topic_is_space to true only if the topic is about astronomy or space, and write a YouTube title (under 70 characters), '
         'a 2-3 sentence description, and hashtags (include #shorts). '
         'Respond ONLY with JSON in this shape: '
         '{"topic_is_space":true,"youtube":{"title":"...","description":"...","hashtags":"#shorts #science"},'
-        '"scenes":[{"narration":"spoken text","search":"2-word query or none","image_prompt":"exact visual illustration"}]}'
+        '"scenes":[{"narration":"spoken text","search":"2-word query or none","image_prompt":"first picture","image_prompt_2":"second picture"}]}'
     )
     api_host = "generativelanguage.googleapis.com"
     base = HTTPS + api_host + "/v1beta/"
@@ -106,28 +111,82 @@ def is_image(data):
     return len(data) > 15000 and (data[:3] == b"\xff\xd8\xff" or data[:8] == b"\x89PNG\r\n\x1a\n")
 
 
-def fetch_ai_image(prompt_text, scene_no, path):
-    """Generate an illustration with Pollinations (free, no key). Retries because the service can be busy.
-    Returns a credit string, or None if every try failed."""
+def img_ext(data):
+    return ".png" if data[:4] == b"\x89PNG" else ".jpg"
+
+
+def gemini_image(prompt_text, path_base):
+    """Try Gemini's own image model with the same key. Returns (path, credit) or None."""
+    if not GEMINI_IMG["ok"]:
+        return None
+    base = HTTPS + "generativelanguage.googleapis.com" + "/v1beta/"
+    hdr = {"x-goog-api-key": GEMINI_KEY}
+    try:
+        if GEMINI_IMG["models"] is None:
+            ml = requests.get(base + "models?pageSize=200", headers=hdr, timeout=60).json().get("models", [])
+            GEMINI_IMG["models"] = sorted((m["name"].split("/")[-1] for m in ml
+                                           if "image" in m["name"] and "imagen" not in m["name"]
+                                           and "generateContent" in m.get("supportedGenerationMethods", [])), reverse=True)[:2]
+            print("Gemini image models:", GEMINI_IMG["models"])
+        text = (prompt_text + ". Photorealistic space documentary photograph, vertical 9:16 composition, "
+                "sharp detail, natural lighting, no text, no watermark, no people.")
+        for model in GEMINI_IMG["models"]:
+            for modalities in (["IMAGE"], ["TEXT", "IMAGE"]):
+                r = requests.post(base + f"models/{model}:generateContent", headers=hdr, timeout=120, json={
+                    "contents": [{"parts": [{"text": text}]}],
+                    "generationConfig": {"responseModalities": modalities}})
+                if r.status_code in (403, 429):
+                    print("Gemini image not available on this key:", r.status_code)
+                    GEMINI_IMG["ok"] = False
+                    return None
+                if not r.ok:
+                    continue
+                for part in r.json()["candidates"][0]["content"].get("parts", []):
+                    blob = part.get("inlineData") or part.get("inline_data")
+                    if blob:
+                        data = base64.b64decode(blob["data"])
+                        if is_image(data):
+                            path = path_base + img_ext(data)
+                            with open(path, "wb") as fh:
+                                fh.write(data)
+                            return path, f"AI illustration (Gemini): {prompt_text[:60]}"
+    except Exception as e:
+        print("Gemini image failed:", e)
+    return None
+
+
+def pollinations_image(prompt_text, scene_no, path_base):
     clean_prompt = (
-        f"{prompt_text}, ultra-realistic 8K space astronomy documentary cinematography, "
-        "epic scale, deep cosmos, volumetric lighting, vertical 9:16 aspect ratio, sharp focus, no text, no watermark"
+        f"{prompt_text}, photorealistic space documentary photograph, sharp focus, natural lighting, "
+        "vertical composition, no text, no watermark, no people"
     )
     encoded = urllib.parse.quote(clean_prompt)
     poll_host = "image.pollinations.ai"
     for attempt in range(3):
         seed = random.randint(1000, 999999) + scene_no
-        url = HTTPS + poll_host + f"/prompt/{encoded}?width=1080&height=1920&seed={seed}&nologo=true"
+        url = HTTPS + poll_host + f"/prompt/{encoded}?width=1080&height=1920&seed={seed}&model=flux&nologo=true"
         try:
             resp = requests.get(url, timeout=120, headers=UA)
             if resp.ok and is_image(resp.content):
+                path = path_base + img_ext(resp.content)
                 with open(path, "wb") as fh:
                     fh.write(resp.content)
-                return f"AI scene illustration (Pollinations): {prompt_text[:60]}"
-            print("AI image try", attempt + 1, "not usable:", resp.status_code)
+                return path, f"AI illustration (Pollinations): {prompt_text[:60]}"
+            print("Pollinations try", attempt + 1, "not usable:", resp.status_code)
         except Exception as e:
-            print("AI image try", attempt + 1, "failed:", e)
+            print("Pollinations try", attempt + 1, "failed:", e)
         time.sleep(5 * (attempt + 1))
+    return None
+
+
+def make_ai_image(prompt_text, scene_no, path_base):
+    """Returns (path, credit, has_watermark) or None."""
+    got = gemini_image(prompt_text, path_base)
+    if got:
+        return got[0], got[1], False
+    got = pollinations_image(prompt_text, scene_no, path_base)
+    if got:
+        return got[0], got[1], True  # Pollinations puts a small logo at the bottom; it gets cropped out
     return None
 
 
@@ -176,32 +235,26 @@ def download_video(cands, used, path):
     return None
 
 
-def get_media(scene, base, used, scene_no):
-    query = (scene.get("search") or "none").lower().strip()
-    img_prompt = scene.get("image_prompt") or scene.get("narration")
-
-    # 1. If search is a valid physical body, try to get a matching stock video first
-    if query != "none" and len(query) > 2:
+def get_shot(shot_no, search, img_prompt, base, used, scene_no):
+    """One picture or clip for part of a scene. Returns (kind, path, credit, has_watermark)."""
+    path_base = f"{base}_shot{shot_no}_src"
+    query = (search or "none").lower().strip()
+    if shot_no == 0 and query != "none" and len(query) > 2:
         credit = download_video([c for c in pixabay_video_cands(query) if c["uid"] not in used],
-                                used, base + "_src.mp4")
+                                used, path_base + ".mp4")
         if credit:
-            print(f"Scene {scene_no + 1} [video match] {query!r} -> {credit}")
-            return "video", base + "_src.mp4", credit
-
-    # 2. For conceptual lines, generate a custom AI illustration matching the narration
-    credit = fetch_ai_image(img_prompt, scene_no, base + "_src.jpg")
-    if credit:
-        print(f"Scene {scene_no + 1} [concept ai-art] {img_prompt!r}")
-        return "image", base + "_src.jpg", credit
-
-    # 3. Fallback to general space video
+            print(f"Scene {scene_no + 1}.{shot_no + 1} [video] {query!r}")
+            return "video", path_base + ".mp4", credit, False
+    got = make_ai_image(img_prompt, scene_no * 10 + shot_no, path_base)
+    if got:
+        print(f"Scene {scene_no + 1}.{shot_no + 1} [image] {img_prompt!r}")
+        return "image", got[0], got[1], got[2]
     for fallback in ("deep space", "galaxy stars", "nebula cosmos"):
         credit = download_video([c for c in pixabay_video_cands(fallback) if c["uid"] not in used],
-                                used, base + "_src.mp4")
+                                used, path_base + ".mp4")
         if credit:
-            return "video", base + "_src.mp4", credit
-
-    raise SystemExit(f"Could not find footage for scene {scene_no + 1}")
+            return "video", path_base + ".mp4", credit, False
+    raise SystemExit(f"Could not find a picture for scene {scene_no + 1}")
 
 
 def duration(path):
@@ -259,16 +312,28 @@ STYLE = ("FontName=DejaVu Sans,Bold=1,FontSize=13,PrimaryColour=&H00FFFFFF,"
          "MarginV=95,MarginL=30,MarginR=30")
 
 
-def scene_filter(kind, base):
-    if kind == "image":
-        layout = (
-            "[0:v]scale=2160:3840:force_original_aspect_ratio=increase,crop=2160:3840,"
-            "zoompan=z='min(1.0+0.0005*on,1.18)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-            "d=1:s=1080x1920:fps=30"
-        )
-    else:
-        layout = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
-    return layout + f",subtitles={base}.srt:force_style='{STYLE}'[v]"
+def probe_size(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height", "-of", "csv=p=0", path],
+                         capture_output=True, text=True, check=True)
+    w, h = out.stdout.strip().split(",")[:2]
+    return int(w), int(h)
+
+
+def shot_filter(kind, src, wm, zoom_in):
+    if kind == "video":
+        return "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[v]"
+    w, h = probe_size(src)
+    z = "min(1.0+0.0012*on,1.25)" if zoom_in else "max(1.25-0.0012*on,1.0)"
+    zoom = f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=30[v]"
+    pre = "[0:v]crop=iw:trunc(ih*0.93/2)*2:0:0," if wm else "[0:v]"  # cut off a watermark strip if present
+    if w / h < 0.62:  # tall picture: fill the screen
+        return pre + "scale=2160:3840:force_original_aspect_ratio=increase,crop=2160:3840," + zoom
+    return (pre + "split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25[bg];"
+            "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,scale=2160:3840," + zoom)
+
+
+ENC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", "30"]
 
 
 async def main():
@@ -277,18 +342,28 @@ async def main():
     for i, s in enumerate(scenes):
         base = f"work/s{i}"
         words = await speak(s["narration"], base + ".mp3")
-        kind, src, credit = get_media(s, base, used, i)
-        credits.append(credit)
         audio_len = duration(base + ".mp3")
         dur = audio_len + 0.4
         write_srt(words or even_words(s["narration"], audio_len), dur, base + ".srt")
-        vf = scene_filter(kind, base)
-        inp = (["-loop", "1", "-framerate", "30", "-i", src] if kind == "image"
-               else ["-stream_loop", "-1", "-i", src])
-        run(["ffmpeg", "-y"] + inp + ["-i", base + ".mp3",
-             "-t", f"{dur}", "-filter_complex", vf, "-map", "[v]", "-map", "1:a",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-             "-r", "30", "-c:a", "aac", "-ar", "44100", base + ".mp4"])
+        prompts = [s.get("image_prompt") or s["narration"],
+                   s.get("image_prompt_2") or s.get("image_prompt") or s["narration"]]
+        shot_len = dur / SHOTS_PER_SCENE
+        lines = []
+        for k in range(SHOTS_PER_SCENE):
+            kind, src, credit, wm = get_shot(k, s.get("search") if k == 0 else "none", prompts[k], base, used, i)
+            credits.append(credit)
+            inp = (["-loop", "1", "-framerate", "30", "-i", src] if kind == "image"
+                   else ["-stream_loop", "-1", "-i", src])
+            out = f"{base}_shot{k}.mp4"
+            run(["ffmpeg", "-y"] + inp + ["-t", f"{shot_len:.3f}", "-filter_complex",
+                 shot_filter(kind, src, wm, zoom_in=(k % 2 == 0)), "-map", "[v]", "-an"] + ENC + [out])
+            lines.append(f"file 's{i}_shot{k}.mp4'")
+        with open(f"{base}_shots.txt", "w") as fh:
+            fh.write("\n".join(lines))
+        run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", f"{base}_shots.txt", "-c", "copy", f"{base}_v.mp4"])
+        run(["ffmpeg", "-y", "-i", f"{base}_v.mp4", "-i", base + ".mp3",
+             "-vf", f"subtitles={base}.srt:force_style='{STYLE}'", "-af", "apad", "-t", f"{dur:.3f}",
+             "-map", "0:v", "-map", "1:a"] + ENC + ["-c:a", "aac", "-ar", "44100", base + ".mp4"])
         parts.append(f"file 's{i}.mp4'")
     with open("work/list.txt", "w") as fh:
         fh.write("\n".join(parts))
