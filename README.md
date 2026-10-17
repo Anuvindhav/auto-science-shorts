@@ -1,80 +1,69 @@
-# Auto Science Shorts
+# 🔭 Auto Science Shorts
 
-Type a topic, get a finished ~30-second vertical video (1080x1920) for YouTube Shorts. It runs free on GitHub.
+**Type a topic. Get a ready-to-post, captioned YouTube Short. Free, and it runs entirely from your phone.**
 
-## What it does
+> 🎬 **See a video it made:** [PASTE YOUR BEST SHORT LINK HERE](https://youtube.com)
 
-1. **Gemini** writes a short script from your title and picks footage searches. The program finds a working Gemini model by itself and retries if Google is busy.
-2. **edge-tts** reads the script in one calm storytelling voice (the same voice every time).
-3. **Pixabay** supplies free stock footage that matches each scene.
-4. **ffmpeg** joins everything into `short.mp4`. Captions show the words being spoken, 3 to 4 words at a time, timed to the voice.
+No video editing. No local setup. No paid subscriptions. You tap **Run workflow**, type something like *"How big is our solar system?"*, and a few minutes later you download a finished 1080x1920 video.
 
-## Files in this repo
+## What it makes
 
-- `auto_science_shorts.py`: the program that does the work.
-- `.github/workflows/make-short.yml`: tells GitHub how to run the program when you tap "Run workflow".
-- `README.md`: this guide.
+- ✍️ **A fact-focused script** written by Gemini that answers your question, with real numbers and everyday comparisons
+- 🎙️ **A calm storytelling voice**, the same one every time (free, no limits)
+- 🖼️ **Matching visuals** that change every few seconds, from free stock footage and AI illustrations
+- 💬 **Captions timed to the spoken words**
+- 📝 **A YouTube title, description and hashtags** in a text file, plus a footage credits list
+- ⏱️ **Your choice of length:** 30, 45, 60 or 90 seconds
 
-## One-time setup
-
-### 1. Get two free keys (like passwords for each service)
-
-- **Google Gemini key:** go to aistudio.google.com, tap Get API key, then Create API key. If it asks for a project, create one first.
-- **Pixabay key:** sign up at pixabay.com, then open pixabay.com/api/docs/. Your key appears on that page while you are logged in.
-
-### 2. Save the keys in GitHub
-
-In this repo: **Settings > Secrets and variables > Actions > New repository secret**.
-
-| Name (type exactly) | Value |
-| --- | --- |
-| `GEMINI_API_KEY` | your Google key |
-| `PIXABAY_API_KEY` | your Pixabay key |
-
-Never paste keys into the code files, chats or anywhere public. If a key is ever exposed, create a new one and replace the secret.
-
-## Make a video
-
-1. Open the **Actions** tab.
-2. Tap **Make short** on the left.
-3. Tap **Run workflow**, type your title (for example `Why do we fall down?`), and tap the green **Run workflow** button.
-4. Wait 2 to 4 minutes. A green check means it worked.
-5. Tap the finished run, scroll to **Artifacts**, and tap the download icon next to **short**.
-6. Unzip it in the Files app (press and hold the zip, then **Uncompress**). Inside is `short.mp4`.
-
-Tip: add the Actions page to your home screen (Safari share icon, then Add to Home Screen) so it is one tap away.
-
-## Change the voice
-
-Open `auto_science_shorts.py` and edit this line near the top:
+## How it works
 
 ```
-VOICE = "en-US-AndrewNeural"
+Your topic → Gemini writes the script → edge-tts reads it aloud
+          → pictures and clips found or generated for every scene
+          → ffmpeg adds captions and joins everything → short.mp4
 ```
 
-Other good storytelling voices: `en-US-GuyNeural`, `en-GB-RyanNeural`, `en-US-AriaNeural`, `en-US-JennyNeural`.
+Everything runs on free GitHub Actions. You only need two free API keys.
 
-## Change the caption look
+## Quick start (about 10 minutes)
 
-Near the middle of `auto_science_shorts.py` is a line starting with `STYLE =`. `FontSize=10` controls the text size and `MarginV=70` controls how high the captions sit (bigger number means higher).
+1. **Use this repo as a template:** tap **Use this template** (or **Fork**) at the top of the page.
+2. **Get two free keys**
+   - Google Gemini: [aistudio.google.com](https://aistudio.google.com), then Get API key
+   - Pixabay: sign up at [pixabay.com](https://pixabay.com), then open pixabay.com/api/docs/
+3. **Save them as secrets:** Settings → Secrets and variables → Actions → New repository secret
+   - `GEMINI_API_KEY`
+   - `PIXABAY_API_KEY`
+4. **Run it:** Actions → **Make short** → Run workflow → type a topic and pick a length.
+5. **Download:** open the newest item under **Releases** and tap `short.mp4`.
 
-## If something goes wrong
+Never put keys in the code files. Keep them in secrets only.
 
-Open the failed run, tap the red step, and read the last lines.
+## Make it yours
 
-| Message | Meaning and fix |
-| --- | --- |
-| `KeyError: GEMINI_API_KEY` or `PIXABAY_API_KEY` | A secret is missing or misspelled. Re-add it exactly as shown above. |
-| `503` or "high demand" from Gemini | Google is busy. The program retries by itself. If it still fails, wait 10 minutes and run again. |
-| `429` or "exceeded your current quota" | You used up the free Gemini allowance for now. It resets daily. Try again later. |
-| `404` or "model no longer available" | The program picks a model automatically. Re-run, and check that the Gemini key is valid. |
-| `401` or `403` | The key is wrong or was deleted. Make a new key and update the secret. |
-| `No such file or directory: ffprobe` | The workflow file is missing the ffmpeg install step. Re-copy `make-short.yml`. |
-| Footage does not match the topic | Re-run for a different result. The footage searches are written by Gemini. |
-| "Operation could not be completed" when unzipping | Download again, then press and hold the zip and choose **Uncompress**. Or move it to On My iPhone first. |
+- **Voice:** change `VOICE` near the top of `auto_science_shorts.py` (for example `en-GB-RyanNeural`).
+- **Caption look:** edit the `STYLE` line.
+- **Length and number of pictures per scene:** `length` in the run box, `SHOTS_PER_SCENE` in the code.
 
-## Notes
+## Good to know
 
-- Free tiers have limits and can change, so check each service's current terms.
-- Pixabay footage is free to use, but check Pixabay's license page for the latest rules before uploading.
-- Wide stock clips may appear as a band in the middle of the screen over a blurred background. This keeps them sharp.
+- Free services have limits and can be busy. The program retries and falls back on its own.
+- Always read the script before posting. AI can get facts wrong.
+- If your pictures look realistic, use YouTube's AI disclosure toggle.
+- Stock footage and AI images have their own terms. Check each service before you post, and see `metadata.txt` for what was used in each video.
+
+## Ideas for next versions
+
+- [ ] A weekly topic queue so it makes a video every day
+- [ ] Drop in your own Google Flow clips for key scenes
+- [ ] More languages and voices
+- [ ] Different script styles (myth-buster, "what if", comparison)
+- [ ] Auto-upload as a private draft
+
+Ideas and pull requests are welcome. Open an **Issue** to suggest something.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
+
+If this helped you, a ⭐ at the top of the page really helps other people find it.
